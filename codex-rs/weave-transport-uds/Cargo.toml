@@ -1,0 +1,17 @@
+[package]
+name = "codex-weave-transport-uds"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+codex-weave-runtime = { workspace = true }
+dirs = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net", "rt", "sync"] }
+uuid = { workspace = true, features = ["v4"] }

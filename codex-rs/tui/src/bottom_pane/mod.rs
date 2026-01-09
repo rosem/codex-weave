@@ -8,6 +8,7 @@ use crate::render::renderable::FlexRenderable;
 use crate::render::renderable::Renderable;
 use crate::render::renderable::RenderableItem;
 use crate::tui::FrameRequester;
+use crate::weave_client::WeaveAgent;
 use bottom_pane_view::BottomPaneView;
 use codex_core::features::Features;
 use codex_core::skills::model::SkillMetadata;
@@ -32,6 +33,7 @@ mod footer;
 mod list_selection_view;
 mod prompt_args;
 mod skill_popup;
+mod weave_agent_popup;
 pub(crate) use list_selection_view::SelectionViewParams;
 mod feedback_view;
 pub(crate) use feedback_view::feedback_selection_params;
@@ -87,6 +89,7 @@ pub(crate) struct BottomPane {
     queued_user_messages: QueuedUserMessages,
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
+    weave_session_label: Option<String>,
 }
 
 pub(crate) struct BottomPaneParams {
@@ -136,11 +139,22 @@ impl BottomPane {
             animations_enabled,
             context_window_percent: None,
             context_window_used_tokens: None,
+            weave_session_label: None,
         }
     }
 
     pub fn set_skills(&mut self, skills: Option<Vec<SkillMetadata>>) {
         self.composer.set_skill_mentions(skills);
+        self.request_redraw();
+    }
+
+    pub fn set_weave_agents(&mut self, agents: Option<Vec<WeaveAgent>>) {
+        self.composer.set_weave_agents(agents);
+        self.request_redraw();
+    }
+
+    pub fn set_weave_agent_identity(&mut self, agent_id: String) {
+        self.composer.set_weave_agent_identity(agent_id);
         self.request_redraw();
     }
 
@@ -401,6 +415,16 @@ impl BottomPane {
         self.context_window_used_tokens = used_tokens;
         self.composer
             .set_context_window(percent, self.context_window_used_tokens);
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_weave_session_label(&mut self, label: Option<String>) {
+        if self.weave_session_label == label {
+            return;
+        }
+
+        self.weave_session_label = label.clone();
+        self.composer.set_weave_session_label(label);
         self.request_redraw();
     }
 

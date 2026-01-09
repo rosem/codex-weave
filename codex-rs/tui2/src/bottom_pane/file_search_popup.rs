@@ -125,6 +125,7 @@ impl WidgetRef for &FileSearchPopup {
                 .iter()
                 .map(|m| GenericDisplayRow {
                     name: m.path.clone(),
+                    name_style: None,
                     match_indices: m
                         .indices
                         .as_ref()

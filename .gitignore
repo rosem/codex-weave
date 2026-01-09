@@ -1,3 +1,16 @@
+#weave
+.cargo/
+.cargo-bin/
+.cargo-home/
+.cargo-local/
+.cargo-target/
+.cargo/ (only if you don’t plan to check in .cargo/config*; otherwise ignore just the cache dirs)
+.gocache/
+.gomodcache/
+.serena/
+.tools/
+target/
+
 # deps
 # Node.js dependencies
 node_modules

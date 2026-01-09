@@ -19,6 +19,7 @@ use super::scroll_state::ScrollState;
 #[derive(Default)]
 pub(crate) struct GenericDisplayRow {
     pub name: String,
+    pub name_style: Option<Style>,
     pub display_shortcut: Option<KeyBinding>,
     pub match_indices: Option<Vec<usize>>, // indices to bold (char positions)
     pub description: Option<String>,       // optional grey text after the name
@@ -197,6 +198,12 @@ fn build_full_line(row: &GenericDisplayRow, desc_col: usize) -> Line<'static> {
         // If there is at least one cell available, add an ellipsis.
         // When name_limit is 0, we still show an ellipsis to indicate truncation.
         name_spans.push("…".into());
+    }
+
+    if let Some(name_style) = row.name_style {
+        for span in &mut name_spans {
+            span.style = span.style.patch(name_style);
+        }
     }
 
     if row.disabled_reason.is_some() {

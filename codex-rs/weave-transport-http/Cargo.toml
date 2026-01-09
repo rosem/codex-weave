@@ -1,0 +1,20 @@
+[package]
+name = "codex-weave-transport-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = { workspace = true, features = ["json", "query", "tokio"] }
+codex-weave-runtime = { workspace = true }
+codex-weave-transport-uds = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+tokio-stream = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }

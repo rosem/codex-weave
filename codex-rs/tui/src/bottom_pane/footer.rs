@@ -13,8 +13,10 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
+use unicode_width::UnicodeWidthChar;
+use unicode_width::UnicodeWidthStr;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct FooterProps {
     pub(crate) mode: FooterMode,
     pub(crate) esc_backtrack_hint: bool,
@@ -22,6 +24,7 @@ pub(crate) struct FooterProps {
     pub(crate) is_task_running: bool,
     pub(crate) context_window_percent: Option<i64>,
     pub(crate) context_window_used_tokens: Option<i64>,
+    pub(crate) weave_session_label: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -67,8 +70,12 @@ pub(crate) fn footer_height(props: FooterProps) -> u16 {
 }
 
 pub(crate) fn render_footer(area: Rect, buf: &mut Buffer, props: FooterProps) {
+    let mut lines = footer_lines(props.clone());
+    if let Some(label) = props.weave_session_label.as_deref() {
+        append_session_indicator(&mut lines, area.width, label);
+    }
     Paragraph::new(prefix_lines(
-        footer_lines(props),
+        lines,
         " ".repeat(FOOTER_INDENT_COLS).into(),
         " ".repeat(FOOTER_INDENT_COLS).into(),
     ))
@@ -258,6 +265,62 @@ fn context_window_line(percent: Option<i64>, used_tokens: Option<i64>) -> Line<'
     Line::from(vec![Span::from("100% context left").dim()])
 }
 
+fn append_session_indicator(lines: &mut [Line<'static>], area_width: u16, label: &str) {
+    let Some(line) = lines.last_mut() else {
+        return;
+    };
+    let available_width = usize::from(area_width)
+        .saturating_sub(FOOTER_INDENT_COLS.saturating_mul(2))
+        .max(1);
+    let line_width = line.width();
+    let min_gap = 1;
+    let max_label_width = available_width.saturating_sub(line_width + min_gap);
+    if max_label_width == 0 {
+        return;
+    }
+    let label_text = truncate_to_width(label, max_label_width);
+    let label_width = UnicodeWidthStr::width(label_text.as_str());
+    if label_width == 0 {
+        return;
+    }
+    let gap = available_width.saturating_sub(line_width + label_width);
+    if gap < min_gap {
+        return;
+    }
+    line.push_span(Span::from(" ".repeat(gap)));
+    line.push_span(Span::from(label_text).dim());
+}
+
+fn truncate_to_width(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(text) <= max_width {
+        return text.to_string();
+    }
+    let ellipsis = match max_width {
+        1 => ".",
+        2 => "..",
+        _ => "...",
+    };
+    let target_width = max_width.saturating_sub(ellipsis.len());
+    if target_width == 0 {
+        return ellipsis.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + width > target_width {
+            break;
+        }
+        out.push(ch);
+        used += width;
+    }
+    out.push_str(ellipsis);
+    out
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ShortcutId {
     Commands,
@@ -431,7 +494,7 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     fn snapshot_footer(name: &str, props: FooterProps) {
-        let height = footer_height(props).max(1);
+        let height = footer_height(props.clone()).max(1);
         let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
         terminal
             .draw(|f| {
@@ -453,6 +516,7 @@ mod tests {
                 is_task_running: false,
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                weave_session_label: None,
             },
         );
 
@@ -465,6 +529,7 @@ mod tests {
                 is_task_running: false,
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                weave_session_label: None,
             },
         );
 
@@ -477,6 +542,7 @@ mod tests {
                 is_task_running: false,
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                weave_session_label: None,
             },
         );
 
@@ -489,6 +555,7 @@ mod tests {
                 is_task_running: true,
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                weave_session_label: None,
             },
         );
 
@@ -501,6 +568,7 @@ mod tests {
                 is_task_running: false,
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                weave_session_label: None,
             },
         );
 
@@ -513,6 +581,7 @@ mod tests {
                 is_task_running: false,
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                weave_session_label: None,
             },
         );
 
@@ -525,6 +594,7 @@ mod tests {
                 is_task_running: true,
                 context_window_percent: Some(72),
                 context_window_used_tokens: None,
+                weave_session_label: None,
             },
         );
 
@@ -537,6 +607,7 @@ mod tests {
                 is_task_running: false,
                 context_window_percent: None,
                 context_window_used_tokens: Some(123_456),
+                weave_session_label: None,
             },
         );
     }

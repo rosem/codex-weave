@@ -608,6 +608,7 @@ checksum = "021e862c184ae977658b36c4500f7feac3221ca5da43e3f25bd04ab6c79a29b5"
 dependencies = [
  "axum-core",
  "bytes",
+ "form_urlencoded",
  "futures-util",
  "http 1.3.1",
  "http-body",
@@ -622,6 +623,9 @@ dependencies = [
  "pin-project-lite",
  "rustversion",
  "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tower",
@@ -1928,6 +1932,42 @@ dependencies = [
 [[package]]
 name = "codex-utils-string"
 version = "0.0.0"
+
+[[package]]
+name = "codex-weave-runtime"
+version = "0.0.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "codex-weave-transport-http"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "codex-weave-runtime",
+ "codex-weave-transport-uds",
+ "futures",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "uuid",
+]
+
+[[package]]
+name = "codex-weave-transport-uds"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "codex-weave-runtime",
+ "dirs",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
 
 [[package]]
 name = "codex-windows-sandbox"

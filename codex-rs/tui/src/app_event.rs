@@ -9,6 +9,10 @@ use codex_protocol::openai_models::ModelPreset;
 
 use crate::bottom_pane::ApprovalRequest;
 use crate::history_cell::HistoryCell;
+use crate::weave_client::WeaveAgent;
+use crate::weave_client::WeaveAgentConnection;
+use crate::weave_client::WeaveIncomingMessage;
+use crate::weave_client::WeaveSession;
 
 use codex_core::features::Feature;
 use codex_core::protocol::AskForApproval;
@@ -46,11 +50,75 @@ pub(crate) enum AppEvent {
         matches: Vec<FileMatch>,
     },
 
+    /// Refresh Weave agent list for the active session.
+    StartWeaveAgentList,
+
     /// Result of refreshing rate limits
     RateLimitSnapshotFetched(RateLimitSnapshot),
 
     /// Result of computing a `/diff` command.
     DiffResult(String),
+
+    /// Open the Weave session menu with the current list of sessions.
+    OpenWeaveSessionMenu {
+        sessions: Vec<WeaveSession>,
+    },
+
+    /// Open the Weave session close menu with the current list of sessions.
+    OpenWeaveSessionCloseMenu {
+        sessions: Vec<WeaveSession>,
+    },
+
+    /// Prompt for a Weave agent name.
+    OpenWeaveAgentNamePrompt,
+
+    /// Update the current Weave agent name.
+    SetWeaveAgentName {
+        name: String,
+    },
+
+    /// Prompt for a new Weave session name.
+    OpenWeaveSessionCreatePrompt,
+
+    /// Select or clear the active Weave session.
+    SetWeaveSessionSelection {
+        session: Option<WeaveSession>,
+    },
+
+    /// Notify the UI that a Weave session closed successfully.
+    WeaveSessionClosed {
+        session_id: String,
+    },
+
+    /// Notify the UI of a successful Weave agent connection.
+    WeaveAgentConnected {
+        session_id: String,
+        connection: WeaveAgentConnection,
+    },
+
+    /// Notify the UI when a Weave agent disconnects.
+    WeaveAgentDisconnected {
+        session_id: String,
+    },
+
+    /// Notify the UI when a Weave agent connection fails.
+    WeaveAgentConnectFailed {
+        session_id: String,
+    },
+
+    /// Deliver Weave agent listings for the active session.
+    WeaveAgentListResult {
+        session_id: String,
+        agents: Vec<WeaveAgent>,
+    },
+
+    /// Deliver an inbound Weave message.
+    WeaveMessageReceived {
+        message: WeaveIncomingMessage,
+    },
+
+    /// Scroll the transcript to the most recent line.
+    ScrollTranscriptToBottom,
 
     InsertHistoryCell(Box<dyn HistoryCell>),
 

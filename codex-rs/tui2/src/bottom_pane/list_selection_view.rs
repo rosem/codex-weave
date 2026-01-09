@@ -6,6 +6,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -44,6 +45,7 @@ pub(crate) struct SelectionItem {
     pub actions: Vec<SelectionAction>,
     pub dismiss_on_select: bool,
     pub search_value: Option<String>,
+    pub is_search_row: bool,
 }
 
 pub(crate) struct SelectionViewParams {
@@ -53,8 +55,10 @@ pub(crate) struct SelectionViewParams {
     pub items: Vec<SelectionItem>,
     pub is_searchable: bool,
     pub search_placeholder: Option<String>,
+    pub show_search_bar: bool,
     pub header: Box<dyn Renderable>,
     pub initial_selected_idx: Option<usize>,
+    pub on_cancel: Option<SelectionAction>,
 }
 
 impl Default for SelectionViewParams {
@@ -66,8 +70,10 @@ impl Default for SelectionViewParams {
             items: Vec::new(),
             is_searchable: false,
             search_placeholder: None,
+            show_search_bar: true,
             header: Box::new(()),
             initial_selected_idx: None,
+            on_cancel: None,
         }
     }
 }
@@ -81,10 +87,13 @@ pub(crate) struct ListSelectionView {
     is_searchable: bool,
     search_query: String,
     search_placeholder: Option<String>,
+    show_search_bar: bool,
     filtered_indices: Vec<usize>,
     last_selected_actual_idx: Option<usize>,
+    last_unfiltered_selected_actual_idx: Option<usize>,
     header: Box<dyn Renderable>,
     initial_selected_idx: Option<usize>,
+    on_cancel: Option<SelectionAction>,
 }
 
 impl ListSelectionView {
@@ -107,15 +116,17 @@ impl ListSelectionView {
             app_event_tx,
             is_searchable: params.is_searchable,
             search_query: String::new(),
-            search_placeholder: if params.is_searchable {
-                params.search_placeholder
-            } else {
-                None
-            },
+            search_placeholder: params
+                .is_searchable
+                .then_some(params.search_placeholder)
+                .flatten(),
+            show_search_bar: params.show_search_bar,
             filtered_indices: Vec::new(),
             last_selected_actual_idx: None,
+            last_unfiltered_selected_actual_idx: None,
             header,
             initial_selected_idx: params.initial_selected_idx,
+            on_cancel: params.on_cancel,
         };
         s.apply_filter();
         s
@@ -130,7 +141,7 @@ impl ListSelectionView {
     }
 
     fn apply_filter(&mut self) {
-        let previously_selected = self
+        let mut previously_selected = self
             .state
             .selected_idx
             .and_then(|visible_idx| self.filtered_indices.get(visible_idx).copied())
@@ -141,15 +152,22 @@ impl ListSelectionView {
             })
             .or_else(|| self.initial_selected_idx.take());
 
+        if self.is_searchable && self.search_query.is_empty()
+            && let Some(last_selected) = self.last_unfiltered_selected_actual_idx {
+                previously_selected = Some(last_selected);
+            }
+
         if self.is_searchable && !self.search_query.is_empty() {
             let query_lower = self.search_query.to_lowercase();
             self.filtered_indices = self
                 .items
                 .iter()
                 .positions(|item| {
-                    item.search_value
-                        .as_ref()
-                        .is_some_and(|v| v.to_lowercase().contains(&query_lower))
+                    item.is_search_row
+                        || item
+                            .search_value
+                            .as_ref()
+                            .is_some_and(|v| v.to_lowercase().contains(&query_lower))
                 })
                 .collect();
         } else {
@@ -157,26 +175,19 @@ impl ListSelectionView {
         }
 
         let len = self.filtered_indices.len();
-        self.state.selected_idx = self
-            .state
-            .selected_idx
-            .and_then(|visible_idx| {
+        self.state.selected_idx = previously_selected
+            .and_then(|actual_idx| {
                 self.filtered_indices
-                    .get(visible_idx)
-                    .and_then(|idx| self.filtered_indices.iter().position(|cur| cur == idx))
-            })
-            .or_else(|| {
-                previously_selected.and_then(|actual_idx| {
-                    self.filtered_indices
-                        .iter()
-                        .position(|idx| *idx == actual_idx)
-                })
+                    .iter()
+                    .position(|idx| *idx == actual_idx)
             })
             .or_else(|| (len > 0).then_some(0));
 
         let visible = Self::max_visible_rows(len);
         self.state.clamp_selection(len);
         self.state.ensure_visible(len, visible);
+        self.skip_separator_down();
+        self.update_last_unfiltered_selection();
     }
 
     fn build_rows(&self) -> Vec<GenericDisplayRow> {
@@ -185,6 +196,37 @@ impl ListSelectionView {
             .enumerate()
             .filter_map(|(visible_idx, actual_idx)| {
                 self.items.get(*actual_idx).map(|item| {
+                    if item.is_search_row {
+                        let display_text = if self.search_query.is_empty() {
+                            self.search_placeholder.clone().unwrap_or_default()
+                        } else {
+                            self.search_query.clone()
+                        };
+                        let prefix = ' ';
+                        let wrap_prefix = format!("{prefix} ");
+                        let wrap_prefix_width = UnicodeWidthStr::width(wrap_prefix.as_str());
+                        let display_name = format!("{wrap_prefix}{display_text}");
+                        let name_style =
+                            self.search_query.is_empty().then(|| Style::default().dim());
+                        return GenericDisplayRow {
+                            name: display_name,
+                            name_style,
+                            display_shortcut: None,
+                            match_indices: None,
+                            description: None,
+                            wrap_indent: Some(wrap_prefix_width),
+                        };
+                    }
+                    if item.name.is_empty() {
+                        return GenericDisplayRow {
+                            name: String::new(),
+                            name_style: None,
+                            display_shortcut: None,
+                            match_indices: None,
+                            description: None,
+                            wrap_indent: Some(0),
+                        };
+                    }
                     let is_selected = self.state.selected_idx == Some(visible_idx);
                     let prefix = if is_selected { '›' } else { ' ' };
                     let name = item.name.as_str();
@@ -213,6 +255,7 @@ impl ListSelectionView {
                     let wrap_indent = description.is_none().then_some(wrap_prefix_width);
                     GenericDisplayRow {
                         name: display_name,
+                        name_style: None,
                         display_shortcut: item.display_shortcut,
                         match_indices: None,
                         description,
@@ -228,6 +271,8 @@ impl ListSelectionView {
         self.state.move_up_wrap(len);
         let visible = Self::max_visible_rows(len);
         self.state.ensure_visible(len, visible);
+        self.skip_separator_up();
+        self.update_last_unfiltered_selection();
     }
 
     fn move_down(&mut self) {
@@ -235,12 +280,16 @@ impl ListSelectionView {
         self.state.move_down_wrap(len);
         let visible = Self::max_visible_rows(len);
         self.state.ensure_visible(len, visible);
+        self.skip_separator_down();
+        self.update_last_unfiltered_selection();
     }
 
     fn accept(&mut self) {
         if let Some(idx) = self.state.selected_idx
             && let Some(actual_idx) = self.filtered_indices.get(idx)
             && let Some(item) = self.items.get(*actual_idx)
+            && !item.name.is_empty()
+            && !item.is_search_row
         {
             self.last_selected_actual_idx = Some(*actual_idx);
             for act in &item.actions {
@@ -266,6 +315,57 @@ impl ListSelectionView {
 
     fn rows_width(total_width: u16) -> u16 {
         total_width.saturating_sub(2)
+    }
+
+    fn skip_separator_down(&mut self) {
+        let len = self.visible_len();
+        for _ in 0..len {
+            if let Some(idx) = self.state.selected_idx
+                && let Some(actual_idx) = self.filtered_indices.get(idx)
+                && self
+                    .items
+                    .get(*actual_idx)
+                    .is_some_and(|item| item.name.is_empty() || item.is_search_row)
+            {
+                self.state.move_down_wrap(len);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn skip_separator_up(&mut self) {
+        let len = self.visible_len();
+        for _ in 0..len {
+            if let Some(idx) = self.state.selected_idx
+                && let Some(actual_idx) = self.filtered_indices.get(idx)
+                && self
+                    .items
+                    .get(*actual_idx)
+                    .is_some_and(|item| item.name.is_empty() || item.is_search_row)
+            {
+                self.state.move_up_wrap(len);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn update_last_unfiltered_selection(&mut self) {
+        if !self.is_searchable || !self.search_query.is_empty() {
+            return;
+        }
+        if let Some(actual_idx) = self
+            .state
+            .selected_idx
+            .and_then(|visible_idx| self.filtered_indices.get(visible_idx).copied())
+            && self
+                .items
+                .get(actual_idx)
+                .is_some_and(|item| !item.name.is_empty() && !item.is_search_row)
+        {
+            self.last_unfiltered_selected_actual_idx = Some(actual_idx);
+        }
     }
 }
 
@@ -348,6 +448,10 @@ impl BottomPaneView for ListSelectionView {
                     .map(|d| d as usize)
                     .and_then(|d| d.checked_sub(1))
                     && idx < self.items.len()
+                    && self
+                        .items
+                        .get(idx)
+                        .is_some_and(|item| !item.name.is_empty() && !item.is_search_row)
                 {
                     self.state.selected_idx = Some(idx);
                     self.accept();
@@ -367,6 +471,9 @@ impl BottomPaneView for ListSelectionView {
     }
 
     fn on_ctrl_c(&mut self) -> CancellationEvent {
+        if let Some(on_cancel) = self.on_cancel.as_ref() {
+            on_cancel(&self.app_event_tx);
+        }
         self.complete = true;
         CancellationEvent::Handled
     }
@@ -388,7 +495,7 @@ impl Renderable for ListSelectionView {
         // Subtract 4 for the padding on the left and right of the header.
         let mut height = self.header.desired_height(width.saturating_sub(4));
         height = height.saturating_add(rows_height + 3);
-        if self.is_searchable {
+        if self.is_searchable && self.show_search_bar {
             height = height.saturating_add(1);
         }
         if self.footer_hint.is_some() {
@@ -418,6 +525,11 @@ impl Renderable for ListSelectionView {
             .desired_height(content_area.width.saturating_sub(4));
         let rows = self.build_rows();
         let rows_width = Self::rows_width(content_area.width);
+        let search_height = if self.is_searchable && self.show_search_bar {
+            1
+        } else {
+            0
+        };
         let rows_height = measure_rows_height(
             &rows,
             &self.state,
@@ -427,7 +539,7 @@ impl Renderable for ListSelectionView {
         let [header_area, _, search_area, list_area] = Layout::vertical([
             Constraint::Max(header_height),
             Constraint::Max(1),
-            Constraint::Length(if self.is_searchable { 1 } else { 0 }),
+            Constraint::Length(search_height),
             Constraint::Length(rows_height),
         ])
         .areas(content_area.inset(Insets::vh(1, 2)));
@@ -444,7 +556,7 @@ impl Renderable for ListSelectionView {
             self.header.render(header_area, buf);
         }
 
-        if self.is_searchable {
+        if self.is_searchable && self.show_search_bar {
             Line::from(self.search_query.clone()).render(search_area, buf);
             let query_span: Span<'static> = if self.search_query.is_empty() {
                 self.search_placeholder

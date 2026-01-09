@@ -18,6 +18,7 @@ pub enum SlashCommand {
     Review,
     New,
     Resume,
+    Weave,
     Init,
     Compact,
     // Undo,
@@ -43,6 +44,7 @@ impl SlashCommand {
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Resume => "resume a saved chat",
+            SlashCommand::Weave => "set agent name, create, select, or close Weave sessions",
             // SlashCommand::Undo => "ask Codex to undo a turn",
             SlashCommand::Quit | SlashCommand::Exit => "exit Codex",
             SlashCommand::Diff => "show git diff (including untracked files)",
@@ -81,6 +83,7 @@ impl SlashCommand {
             | SlashCommand::Skills
             | SlashCommand::Status
             | SlashCommand::Mcp
+            | SlashCommand::Weave
             | SlashCommand::Feedback
             | SlashCommand::Quit
             | SlashCommand::Exit => true,

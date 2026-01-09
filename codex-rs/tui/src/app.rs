@@ -729,6 +729,7 @@ impl App {
                 self.on_conversation_history_for_backtrack(tui, ev).await?;
             }
             AppEvent::ExitRequest => {
+                self.chat_widget.prepare_for_exit();
                 return Ok(false);
             }
             AppEvent::CodexOp(op) => self.chat_widget.submit_op(op),
@@ -748,10 +749,56 @@ impl App {
                 ));
                 tui.frame_requester().schedule_frame();
             }
+            AppEvent::OpenWeaveSessionMenu { sessions } => {
+                self.chat_widget.open_weave_session_menu(sessions);
+            }
+            AppEvent::OpenWeaveSessionCloseMenu { sessions } => {
+                self.chat_widget.open_weave_session_close_menu(sessions);
+            }
+            AppEvent::OpenWeaveAgentNamePrompt => {
+                self.chat_widget.open_weave_agent_name_prompt();
+            }
+            AppEvent::SetWeaveAgentName { name } => {
+                self.chat_widget.set_weave_agent_name(name);
+            }
+            AppEvent::OpenWeaveSessionCreatePrompt => {
+                self.chat_widget.open_weave_session_create_prompt();
+            }
+            AppEvent::SetWeaveSessionSelection { session } => {
+                self.chat_widget.set_weave_session_selection(session);
+            }
+            AppEvent::WeaveSessionClosed { session_id } => {
+                self.chat_widget.on_weave_session_closed(&session_id);
+            }
+            AppEvent::WeaveAgentConnected {
+                session_id,
+                connection,
+            } => {
+                self.chat_widget
+                    .on_weave_agent_connected(session_id, connection);
+            }
+            AppEvent::WeaveAgentDisconnected { session_id } => {
+                self.chat_widget.on_weave_agent_disconnected(&session_id);
+            }
+            AppEvent::WeaveAgentConnectFailed { session_id } => {
+                self.chat_widget.on_weave_agent_connect_failed(&session_id);
+            }
+            AppEvent::WeaveAgentListResult { session_id, agents } => {
+                self.chat_widget.apply_weave_agent_list(session_id, agents);
+            }
+            AppEvent::WeaveMessageReceived { message } => {
+                self.chat_widget.on_weave_message_received(message);
+            }
+            AppEvent::ScrollTranscriptToBottom => {
+                tui.frame_requester().schedule_frame();
+            }
             AppEvent::StartFileSearch(query) => {
                 if !query.is_empty() {
                     self.file_search.on_user_query(query);
                 }
+            }
+            AppEvent::StartWeaveAgentList => {
+                self.chat_widget.request_weave_agent_list();
             }
             AppEvent::FileSearchResult { query, matches } => {
                 self.chat_widget.apply_file_search_result(query, matches);

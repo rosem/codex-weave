@@ -1267,6 +1267,44 @@ pub(crate) fn new_web_search_call(query: String) -> PrefixedWrappedHistoryCell {
     PrefixedWrappedHistoryCell::new(text, "• ".dim(), "  ")
 }
 
+pub(crate) fn new_weave_outbound(
+    sender: String,
+    recipients: Vec<String>,
+    message: String,
+    sender_is_owner: bool,
+) -> PrefixedWrappedHistoryCell {
+    let sender = if sender_is_owner {
+        format!("#{sender} (owner)")
+    } else {
+        format!("#{sender}")
+    };
+    let targets = recipients
+        .into_iter()
+        .map(|name| format!("#{name}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let label = format!("{sender} → {targets}: ");
+    let prefix = Line::from(vec!["• ".dim(), label.magenta()]);
+    PrefixedWrappedHistoryCell::new(message, prefix, "  ".dim())
+}
+
+pub(crate) fn new_weave_inbound(
+    src: String,
+    dst: String,
+    message: String,
+    dst_is_owner: bool,
+) -> PrefixedWrappedHistoryCell {
+    let sender = format!("#{src}");
+    let target = if dst_is_owner {
+        format!("#{dst} (owner)")
+    } else {
+        format!("#{dst}")
+    };
+    let label = format!("{sender} → {target}: ");
+    let prefix = Line::from(vec!["• ".dim(), label.magenta()]);
+    PrefixedWrappedHistoryCell::new(message, prefix, "  ".dim())
+}
+
 /// If the first content is an image, return a new cell with the image.
 /// TODO(rgwood-dd): Handle images properly even if they're not the first result.
 fn try_new_completed_mcp_tool_call_with_image_output(

@@ -91,6 +91,7 @@ pub mod update_action;
 mod update_prompt;
 mod updates;
 mod version;
+mod weave_client;
 
 mod wrapping;
 

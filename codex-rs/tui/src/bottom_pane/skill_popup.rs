@@ -89,6 +89,7 @@ impl SkillPopup {
                     .clone();
                 GenericDisplayRow {
                     name,
+                    name_style: None,
                     match_indices: indices,
                     display_shortcut: None,
                     description: Some(description),
