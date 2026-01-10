@@ -34,6 +34,7 @@ mod skill_popup;
 mod weave_agent_popup;
 pub(crate) use list_selection_view::SelectionViewParams;
 mod feedback_view;
+pub(crate) use feedback_view::feedback_disabled_params;
 pub(crate) use feedback_view::feedback_selection_params;
 pub(crate) use feedback_view::feedback_upload_consent_params;
 mod paste_burst;
@@ -267,6 +268,16 @@ impl BottomPane {
     /// Replace the composer text with `text`.
     pub(crate) fn set_composer_text(&mut self, text: String) {
         self.composer.set_text_content(text);
+        self.request_redraw();
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_composer_input_enabled(
+        &mut self,
+        enabled: bool,
+        placeholder: Option<String>,
+    ) {
+        self.composer.set_input_enabled(enabled, placeholder);
         self.request_redraw();
     }
 
