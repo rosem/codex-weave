@@ -58,11 +58,23 @@ const VERSION_FILENAME: &str = "version.json";
 // We use the latest version from the cask if installation is via homebrew - homebrew does not immediately pick up the latest release and can lag behind.
 const HOMEBREW_CASK_URL: &str =
     "https://raw.githubusercontent.com/Homebrew/homebrew-cask/HEAD/Casks/c/codex.rb";
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
+const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/rosem/codex-weave/releases/latest";
+const NPM_REGISTRY_URL: &str = "https://registry.npmjs.org/@rosem_soo%2fweave";
 
 #[derive(Deserialize, Debug, Clone)]
 struct ReleaseInfo {
     tag_name: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+struct NpmRegistryInfo {
+    #[serde(rename = "dist-tags")]
+    dist_tags: NpmDistTags,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+struct NpmDistTags {
+    latest: String,
 }
 
 fn version_filepath(config: &Config) -> PathBuf {
@@ -85,6 +97,16 @@ async fn check_for_update(version_file: &Path) -> anyhow::Result<()> {
                 .text()
                 .await?;
             extract_version_from_cask(&cask_contents)?
+        }
+        Some(UpdateAction::NpmGlobalLatest | UpdateAction::BunGlobalLatest) => {
+            let info = create_client()
+                .get(NPM_REGISTRY_URL)
+                .send()
+                .await?
+                .error_for_status()?
+                .json::<NpmRegistryInfo>()
+                .await?;
+            info.dist_tags.latest
         }
         _ => {
             let ReleaseInfo {
@@ -136,8 +158,10 @@ fn extract_version_from_cask(cask_contents: &str) -> anyhow::Result<String> {
 }
 
 fn extract_version_from_latest_tag(latest_tag_name: &str) -> anyhow::Result<String> {
-    latest_tag_name
+    let trimmed = latest_tag_name.trim();
+    trimmed
         .strip_prefix("rust-v")
+        .or_else(|| trimmed.strip_prefix('v'))
         .map(str::to_owned)
         .ok_or_else(|| anyhow::anyhow!("Failed to parse latest tag name '{latest_tag_name}'"))
 }
@@ -177,12 +201,22 @@ pub async fn dismiss_version(config: &Config, version: &str) -> anyhow::Result<(
     Ok(())
 }
 
-fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
-    let mut iter = v.trim().split('.');
+fn parse_version(v: &str) -> Option<(u64, u64, u64, u64)> {
+    let trimmed = v.trim();
+    let (core, suffix) = trimmed
+        .split_once('-')
+        .map_or((trimmed, None), |(core, suffix)| (core, Some(suffix)));
+    let weave_suffix = match suffix {
+        None => 0,
+        Some(rest) => rest
+            .strip_prefix("weave.")
+            .and_then(|num| num.parse::<u64>().ok())?,
+    };
+    let mut iter = core.split('.');
     let maj = iter.next()?.parse::<u64>().ok()?;
     let min = iter.next()?.parse::<u64>().ok()?;
     let pat = iter.next()?.parse::<u64>().ok()?;
-    Some((maj, min, pat))
+    Some((maj, min, pat, weave_suffix))
 }
 
 #[cfg(test)]
@@ -208,11 +242,15 @@ mod tests {
             extract_version_from_latest_tag("rust-v1.5.0").expect("failed to parse version"),
             "1.5.0"
         );
+        assert_eq!(
+            extract_version_from_latest_tag("v1.5.0").expect("failed to parse version"),
+            "1.5.0"
+        );
     }
 
     #[test]
     fn latest_tag_without_prefix_is_invalid() {
-        assert!(extract_version_from_latest_tag("v1.5.0").is_err());
+        assert!(extract_version_from_latest_tag("1.5.0").is_err());
     }
 
     #[test]
@@ -231,7 +269,12 @@ mod tests {
 
     #[test]
     fn whitespace_is_ignored() {
-        assert_eq!(parse_version(" 1.2.3 \n"), Some((1, 2, 3)));
+        assert_eq!(parse_version(" 1.2.3 \n"), Some((1, 2, 3, 0)));
         assert_eq!(is_newer(" 1.2.3 ", "1.2.2"), Some(true));
+    }
+
+    #[test]
+    fn weave_suffix_versions_compare() {
+        assert_eq!(is_newer("0.80.0-weave.2", "0.80.0-weave.1"), Some(true));
     }
 }

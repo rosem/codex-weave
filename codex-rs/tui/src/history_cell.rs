@@ -309,7 +309,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
         } else {
             line![
                 "See ",
-                "https://github.com/openai/codex".cyan().underlined(),
+                "https://github.com/rosem/codex-weave".cyan().underlined(),
                 " for installation options."
             ]
         };
@@ -324,7 +324,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
             update_instruction,
             "",
             "See full release notes:",
-            "https://github.com/openai/codex/releases/latest"
+            "https://github.com/rosem/codex-weave/releases/latest"
                 .cyan()
                 .underlined(),
         ];

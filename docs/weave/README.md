@@ -15,15 +15,28 @@ or `WEAVE_HOME/coord.sock` if `WEAVE_HOME` is set.
 2. Leave it running while any Codex instances need Weave.
 3. Stop it with `Ctrl+C` when you are done.
 
+## Service helper (macOS)
+
+If you installed the npm package, you can manage the coordinator with:
+
+```sh
+weave-service start
+weave-service stop
+```
+
+This uses `WEAVE_HOME` (default `~/.weave`) and writes a log file to
+`$WEAVE_HOME/weave-service.log`.
+
 ## Bundled binary (repo layout)
 
 If you bundle Weave with the CLI, place it under:
 
 ```
-codex-cli/vendor/weave/<platform>/weave
+codex-cli/vendor/<platform>/weave/weave
 ```
 
-Run that binary directly for manual start/stop.
+Run that binary directly for manual start/stop, or use `weave-service start`
+and `weave-service stop` on macOS.
 
 ## Notes
 

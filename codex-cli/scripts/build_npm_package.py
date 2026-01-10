@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage and optionally package the @openai/codex npm module."""
+"""Stage and optionally package the Codex CLI npm module."""
 
 import argparse
 import json
@@ -16,19 +16,21 @@ RESPONSES_API_PROXY_NPM_ROOT = REPO_ROOT / "codex-rs" / "responses-api-proxy" / 
 CODEX_SDK_ROOT = REPO_ROOT / "sdk" / "typescript"
 
 PACKAGE_NATIVE_COMPONENTS: dict[str, list[str]] = {
-    "codex": ["codex", "rg"],
+    "codex": ["codex", "rg", "weave"],
     "codex-responses-api-proxy": ["codex-responses-api-proxy"],
     "codex-sdk": ["codex"],
 }
 WINDOWS_ONLY_COMPONENTS: dict[str, list[str]] = {
     "codex": ["codex-windows-sandbox-setup", "codex-command-runner"],
 }
+MACOS_ONLY_COMPONENTS = {"weave"}
 COMPONENT_DEST_DIR: dict[str, str] = {
     "codex": "codex",
     "codex-responses-api-proxy": "codex-responses-api-proxy",
     "codex-windows-sandbox-setup": "codex",
     "codex-command-runner": "codex",
     "rg": "path",
+    "weave": "weave",
 }
 
 
@@ -164,6 +166,10 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         bin_dir = staging_dir / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(CODEX_CLI_ROOT / "bin" / "codex.js", bin_dir / "codex.js")
+        shutil.copy2(
+            CODEX_CLI_ROOT / "bin" / "weave-service.js",
+            bin_dir / "weave-service.js",
+        )
         rg_manifest = CODEX_CLI_ROOT / "bin" / "rg"
         if rg_manifest.exists():
             shutil.copy2(rg_manifest, bin_dir / "rg")
@@ -262,6 +268,7 @@ def copy_native_binaries(
 
         if "windows" in target_dir.name:
             components_set.update(WINDOWS_ONLY_COMPONENTS.get(package, []))
+        is_macos_target = "apple-darwin" in target_dir.name
 
         dest_target_dir = vendor_dest / target_dir.name
         dest_target_dir.mkdir(parents=True, exist_ok=True)
@@ -273,6 +280,8 @@ def copy_native_binaries(
 
             src_component_dir = target_dir / dest_dir_name
             if not src_component_dir.exists():
+                if component in MACOS_ONLY_COMPONENTS and not is_macos_target:
+                    continue
                 raise RuntimeError(
                     f"Missing native component '{component}' in vendor source: {src_component_dir}"
                 )

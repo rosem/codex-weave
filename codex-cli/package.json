@@ -1,21 +1,25 @@
 {
-  "name": "@openai/codex",
-  "version": "0.0.0-dev",
+  "name": "@rosem_soo/weave",
+  "version": "0.80.0-weave.1",
   "license": "Apache-2.0",
   "bin": {
-    "codex": "bin/codex.js"
+    "weave": "bin/codex.js",
+    "weave-service": "bin/weave-service.js"
   },
   "type": "module",
   "engines": {
     "node": ">=16"
   },
+  "os": [
+    "darwin"
+  ],
   "files": [
     "bin",
     "vendor"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/openai/codex.git",
+    "url": "git+https://github.com/rosem/codex-weave.git",
     "directory": "codex-cli"
   }
 }
