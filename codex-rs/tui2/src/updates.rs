@@ -275,6 +275,6 @@ mod tests {
 
     #[test]
     fn weave_suffix_versions_compare() {
-        assert_eq!(is_newer("0.80.0-weave.2", "0.80.0-weave.1"), Some(true));
+        assert_eq!(is_newer("0.80.0-weave.3", "0.80.0-weave.1"), Some(true));
     }
 }

@@ -32,6 +32,7 @@ mod list_selection_view;
 mod prompt_args;
 mod skill_popup;
 mod weave_agent_popup;
+mod weave_command_popup;
 pub(crate) use list_selection_view::SelectionViewParams;
 mod feedback_view;
 pub(crate) use feedback_view::feedback_disabled_params;

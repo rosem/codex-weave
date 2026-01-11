@@ -1,6 +1,6 @@
 {
   "name": "@rosem_soo/weave",
-  "version": "0.80.0-weave.2",
+  "version": "0.80.0-weave.3",
   "license": "Apache-2.0",
   "bin": {
     "weave": "bin/codex.js",

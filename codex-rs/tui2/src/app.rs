@@ -1356,6 +1356,7 @@ impl App {
                     self.chat_widget.token_usage(),
                     self.chat_widget.conversation_id(),
                 );
+                let weave_state = self.chat_widget.take_weave_state();
                 self.shutdown_current_conversation().await;
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: self.config.clone(),
@@ -1371,6 +1372,7 @@ impl App {
                     model: self.current_model.clone(),
                 };
                 self.chat_widget = ChatWidget::new(init, self.server.clone());
+                self.chat_widget.restore_weave_state(weave_state);
                 if let Some(summary) = summary {
                     let mut lines: Vec<Line<'static>> = vec![summary.usage_line.clone().into()];
                     if let Some(command) = summary.resume_command {
@@ -1561,6 +1563,9 @@ impl App {
             }
             AppEvent::WeaveMessageReceived { message } => {
                 self.chat_widget.on_weave_message_received(message);
+            }
+            AppEvent::WeaveActionSubmitFailed { group_id } => {
+                self.chat_widget.on_weave_action_submit_failed(&group_id);
             }
             AppEvent::ScrollTranscriptToBottom => {
                 self.transcript_scroll = TranscriptScroll::ToBottom;

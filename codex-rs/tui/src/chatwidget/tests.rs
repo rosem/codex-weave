@@ -421,14 +421,23 @@ async fn make_chatwidget_manual(
         weave_agent_connection: None,
         weave_agents: None,
         pending_weave_relay: None,
-        active_weave_task: None,
+        active_weave_relay: None,
         active_weave_plan: None,
         pending_weave_plan: false,
         weave_relay_buffer: String::new(),
+        relay_output_consumed: false,
+        weave_inbound_task_ids: HashMap::new(),
+        weave_target_states: HashMap::new(),
+        pending_weave_action_messages: VecDeque::new(),
+        pending_weave_new_session_result: None,
+        pending_weave_new_session_context: None,
+        pending_weave_new_session: false,
         frame_requester: FrameRequester::test_dummy(),
         show_welcome_banner: true,
         queued_user_messages: VecDeque::new(),
         active_weave_reply_target: None,
+        active_weave_control_context: None,
+        suppress_weave_interrupt: false,
         suppress_session_configured_redraw: false,
         pending_notification: None,
         is_review_mode: false,
@@ -3811,4 +3820,37 @@ async fn chatwidget_tall() {
     })
     .unwrap();
     assert_snapshot!(term.backend().vt100().screen().contents());
+}
+
+#[tokio::test]
+async fn weave_message_accepts_missing_task_id() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    assert_eq!(chat.should_accept_weave_message("agent-1", None), true);
+    assert_eq!(
+        chat.should_accept_weave_message("agent-1", Some("   ")),
+        true
+    );
+    assert_eq!(
+        chat.should_accept_weave_message("agent-1", Some("task-1")),
+        true
+    );
+}
+
+#[test]
+fn parse_weave_relay_output_actions() {
+    let payload = r#"{"type":"relay_actions","actions":[{"type":"message","dst":"agent-a","text":"Tell a joke"},{"type":"control","dst":"agent-b","command":"new"}]}"#;
+    let output = codex_protocol::weave::parse_weave_relay_output(payload).expect("output");
+    assert_matches!(output, WeaveRelayOutput::RelayActions { actions } => {
+        assert_eq!(actions.len(), 2);
+        assert_matches!(&actions[0], WeaveRelayAction::Message { dst, text, plan } => {
+            assert_eq!(dst, "agent-a");
+            assert_eq!(text, "Tell a joke");
+            assert!(plan.is_none());
+        });
+        assert_matches!(&actions[1], WeaveRelayAction::Control { dst, command } => {
+            assert_eq!(dst, "agent-b");
+            assert_matches!(command, WeaveRelayCommand::New);
+        });
+    });
 }

@@ -129,6 +129,10 @@ pub(crate) enum AppEvent {
     WeaveMessageReceived {
         message: WeaveIncomingMessage,
     },
+    /// Clear pending Weave actions after a submit failure.
+    WeaveActionSubmitFailed {
+        group_id: String,
+    },
 
     /// Scroll the transcript to the most recent line.
     ScrollTranscriptToBottom,

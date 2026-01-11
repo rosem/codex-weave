@@ -13,6 +13,9 @@ mod platform {
     use std::env;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::Ordering;
     use tokio::io::AsyncBufReadExt;
     use tokio::io::AsyncWriteExt;
     use tokio::io::BufReader;
@@ -20,7 +23,7 @@ mod platform {
     use tokio::sync::mpsc;
     use uuid::Uuid;
 
-    const WEAVE_VERSION: u8 = 0;
+    const WEAVE_VERSION: u8 = 1;
     const COORD_SOCKET: &str = "coord.sock";
     const SESSIONS_DIR: &str = "sessions";
 
@@ -43,27 +46,19 @@ mod platform {
         #[serde(skip_serializing_if = "Option::is_none")]
         dst: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        topic: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         session: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         corr: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         payload: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        ack: Option<WeaveAck>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         status: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<WeaveErrorDetail>,
-    }
-
-    #[derive(Debug, Serialize, Deserialize)]
-    struct WeaveAck {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        mode: Option<String>,
-        #[serde(rename = "timeout_ms", skip_serializing_if = "Option::is_none")]
-        timeout_ms: Option<i32>,
     }
 
     #[derive(Debug, Deserialize)]
@@ -97,6 +92,7 @@ mod platform {
     #[derive(Debug, Clone)]
     pub struct WeaveUdsClient {
         src: String,
+        seq: Arc<AtomicU64>,
     }
 
     impl Default for WeaveUdsClient {
@@ -107,7 +103,14 @@ mod platform {
 
     impl WeaveUdsClient {
         pub fn new(src: impl Into<String>) -> Self {
-            Self { src: src.into() }
+            Self {
+                src: src.into(),
+                seq: Arc::new(AtomicU64::new(0)),
+            }
+        }
+
+        fn next_seq(&self) -> u64 {
+            self.seq.fetch_add(1, Ordering::Relaxed).saturating_add(1)
         }
 
         pub async fn list_sessions(&self) -> Result<Vec<WeaveSession>, String> {
@@ -258,20 +261,35 @@ mod platform {
                 return Err(message);
             }
 
-            let payload = build_message_payload(text, sender_name, kind);
-            for dst in dsts {
-                let mut request = new_envelope_with_src(
-                    "message.send",
-                    agent_id.clone(),
-                    Some(session_id.to_string()),
-                    Some(payload.clone()),
-                );
-                request.dst = Some(dst);
-                send_envelope(&mut write_half, &request).await?;
-                let response = read_response(&mut reader, request.id.as_str()).await?;
-                if let Some(message) = response_error(&response) {
-                    return Err(message);
-                }
+            let group_id = Uuid::new_v4().to_string();
+            let sender_name = sender_name.as_deref();
+            let actions = dsts
+                .iter()
+                .enumerate()
+                .map(|(index, dst)| {
+                    action_message_payload(
+                        dst,
+                        text.as_str(),
+                        Uuid::new_v4().to_string(),
+                        index,
+                        kind,
+                        sender_name,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let payload = action_submit_payload(&group_id, actions);
+            let mut request = new_envelope_with_src(
+                "action.submit",
+                agent_id.clone(),
+                Some(session_id.to_string()),
+                Some(payload),
+            );
+            request.seq = Some(self.next_seq());
+            request.idempotency_key = Some(group_id);
+            send_envelope(&mut write_half, &request).await?;
+            let response = read_response(&mut reader, request.id.as_str()).await?;
+            if let Some(message) = response_error(&response) {
+                return Err(message);
             }
 
             let remove_request = new_envelope_with_src(
@@ -431,11 +449,11 @@ mod platform {
             ts: now_timestamp(),
             src,
             dst: None,
-            topic: None,
             session,
+            seq: None,
+            idempotency_key: None,
             corr: None,
             payload,
-            ack: None,
             status: None,
             error: None,
         }
@@ -524,27 +542,43 @@ mod platform {
         }
     }
 
-    fn build_message_payload(
-        text: String,
-        sender_name: Option<String>,
+    fn kind_label(kind: WeaveMessageKind) -> &'static str {
+        match kind {
+            WeaveMessageKind::User => "user",
+            WeaveMessageKind::Reply => "reply",
+            WeaveMessageKind::Control => "control",
+            WeaveMessageKind::System => "system",
+        }
+    }
+
+    fn action_message_payload(
+        dst: &str,
+        text: &str,
+        action_id: String,
+        action_index: usize,
         kind: Option<WeaveMessageKind>,
+        sender_name: Option<&str>,
     ) -> Value {
-        let trimmed = sender_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|name| !name.is_empty());
-        let mut codex = serde_json::Map::new();
-        if let Some(name) = trimmed {
-            codex.insert("sender_name".to_string(), Value::String(name.to_string()));
+        let mut payload = serde_json::Map::new();
+        payload.insert("type".to_string(), json!("message"));
+        payload.insert("dst".to_string(), json!(dst));
+        if let Some(kind) = kind {
+            payload.insert("kind".to_string(), json!(kind_label(kind)));
         }
-        if matches!(kind, Some(WeaveMessageKind::Reply)) {
-            codex.insert("kind".to_string(), Value::String("reply".to_string()));
+        if let Some(sender_name) = sender_name.map(str::trim).filter(|name| !name.is_empty()) {
+            payload.insert("sender_name".to_string(), json!(sender_name));
         }
-        if codex.is_empty() {
-            json!({ "text": text })
-        } else {
-            json!({ "text": text, "codex": codex })
-        }
+        payload.insert("action_id".to_string(), json!(action_id));
+        payload.insert("action_index".to_string(), json!(action_index));
+        payload.insert("text".to_string(), json!(text));
+        Value::Object(payload)
+    }
+
+    fn action_submit_payload(group_id: &str, actions: Vec<Value>) -> Value {
+        let mut payload = serde_json::Map::new();
+        payload.insert("group_id".to_string(), json!(group_id));
+        payload.insert("actions".to_string(), Value::Array(actions));
+        Value::Object(payload)
     }
 
     pub use WeaveUdsClient as Client;

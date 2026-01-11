@@ -35,6 +35,8 @@ use super::paste_burst::PasteBurst;
 use super::skill_popup::SkillPopup;
 use super::weave_agent_popup::WeaveAgentPopup;
 use super::weave_agent_popup::WeaveAgentPopupAction;
+use super::weave_command_popup::WeaveCommand;
+use super::weave_command_popup::WeaveCommandPopup;
 use crate::bottom_pane::paste_burst::FlushResult;
 use crate::bottom_pane::prompt_args::expand_custom_prompt;
 use crate::bottom_pane::prompt_args::expand_if_numeric_with_positional_args;
@@ -118,6 +120,7 @@ pub(crate) struct ChatComposer {
     dismissed_file_popup_token: Option<String>,
     current_file_query: Option<String>,
     current_weave_query: Option<String>,
+    current_weave_command_query: Option<String>,
     pending_pastes: Vec<(String, String)>,
     large_paste_counters: HashMap<usize, usize>,
     has_focus: bool,
@@ -146,6 +149,7 @@ pub(crate) struct ChatComposer {
     transcript_copy_feedback: Option<TranscriptCopyFeedback>,
     skills: Option<Vec<SkillMetadata>>,
     dismissed_weave_popup_token: Option<String>,
+    dismissed_weave_command_popup_token: Option<String>,
     dismissed_skill_popup_token: Option<String>,
 }
 
@@ -155,6 +159,7 @@ enum ActivePopup {
     Command(CommandPopup),
     File(FileSearchPopup),
     WeaveAgent(WeaveAgentPopup),
+    WeaveCommand(WeaveCommandPopup),
     Skill(SkillPopup),
 }
 
@@ -182,6 +187,7 @@ impl ChatComposer {
             dismissed_file_popup_token: None,
             current_file_query: None,
             current_weave_query: None,
+            current_weave_command_query: None,
             pending_pastes: Vec::new(),
             large_paste_counters: HashMap::new(),
             has_focus: has_input_focus,
@@ -207,6 +213,7 @@ impl ChatComposer {
             transcript_copy_feedback: None,
             skills: None,
             dismissed_weave_popup_token: None,
+            dismissed_weave_command_popup_token: None,
             dismissed_skill_popup_token: None,
         };
         // Apply configuration via the setter to keep side-effects centralized.
@@ -221,13 +228,14 @@ impl ChatComposer {
     pub fn set_weave_agents(&mut self, agents: Option<Vec<WeaveAgent>>) {
         if agents.is_none() {
             self.current_weave_query = None;
+            self.current_weave_command_query = None;
         }
         self.weave_agents = agents.clone();
         match (&mut self.active_popup, agents) {
             (ActivePopup::WeaveAgent(popup), Some(agents)) => {
                 popup.set_agents(agents);
             }
-            (ActivePopup::WeaveAgent(_), None) => {
+            (ActivePopup::WeaveAgent(_), None) | (ActivePopup::WeaveCommand(_), None) => {
                 self.active_popup = ActivePopup::None;
             }
             _ => {}
@@ -258,6 +266,9 @@ impl ChatComposer {
             }
             ActivePopup::File(popup) => Constraint::Max(popup.calculate_required_height()),
             ActivePopup::WeaveAgent(popup) => {
+                Constraint::Max(popup.calculate_required_height(area.width))
+            }
+            ActivePopup::WeaveCommand(popup) => {
                 Constraint::Max(popup.calculate_required_height(area.width))
             }
             ActivePopup::Skill(popup) => {
@@ -469,6 +480,9 @@ impl ChatComposer {
             ActivePopup::Command(_) => self.handle_key_event_with_slash_popup(key_event),
             ActivePopup::File(_) => self.handle_key_event_with_file_popup(key_event),
             ActivePopup::WeaveAgent(_) => self.handle_key_event_with_weave_agent_popup(key_event),
+            ActivePopup::WeaveCommand(_) => {
+                self.handle_key_event_with_weave_command_popup(key_event)
+            }
             ActivePopup::Skill(_) => self.handle_key_event_with_skill_popup(key_event),
             ActivePopup::None => self.handle_key_event_without_popup(key_event),
         };
@@ -985,6 +999,78 @@ impl ChatComposer {
         }
     }
 
+    fn handle_key_event_with_weave_command_popup(
+        &mut self,
+        key_event: KeyEvent,
+    ) -> (InputResult, bool) {
+        if self.handle_shortcut_overlay_key(&key_event) {
+            return (InputResult::None, true);
+        }
+        if key_event.code == KeyCode::Esc {
+            let next_mode = esc_hint_mode(self.footer_mode, self.is_task_running);
+            if next_mode != self.footer_mode {
+                self.footer_mode = next_mode;
+                return (InputResult::None, true);
+            }
+        } else {
+            self.footer_mode = reset_mode_after_activity(self.footer_mode);
+        }
+
+        let ActivePopup::WeaveCommand(popup) = &mut self.active_popup else {
+            unreachable!();
+        };
+
+        match key_event {
+            KeyEvent {
+                code: KeyCode::Up, ..
+            }
+            | KeyEvent {
+                code: KeyCode::Char('p'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                popup.move_up();
+                (InputResult::None, true)
+            }
+            KeyEvent {
+                code: KeyCode::Down,
+                ..
+            }
+            | KeyEvent {
+                code: KeyCode::Char('n'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                popup.move_down();
+                (InputResult::None, true)
+            }
+            KeyEvent {
+                code: KeyCode::Esc, ..
+            } => {
+                if let Some(tok) = self.current_weave_command_token() {
+                    self.dismissed_weave_command_popup_token = Some(tok);
+                }
+                self.active_popup = ActivePopup::None;
+                (InputResult::None, true)
+            }
+            KeyEvent {
+                code: KeyCode::Tab, ..
+            }
+            | KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
+                if let Some(command) = popup.selected_command() {
+                    self.insert_weave_control_command(command);
+                }
+                self.active_popup = ActivePopup::None;
+                (InputResult::None, true)
+            }
+            input => self.handle_input_basic(input),
+        }
+    }
+
     fn is_image_path(path: &str) -> bool {
         let lower = path.to_ascii_lowercase();
         lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg")
@@ -1104,6 +1190,28 @@ impl ChatComposer {
         left_prefixed.or(right_prefixed)
     }
 
+    fn current_token_bounds(text: &str, cursor_offset: usize) -> Option<(usize, usize)> {
+        if text.is_empty() {
+            return None;
+        }
+        let safe_cursor = Self::clamp_to_char_boundary(text, cursor_offset);
+        let before_cursor = &text[..safe_cursor];
+        let after_cursor = &text[safe_cursor..];
+
+        let start_idx = before_cursor
+            .char_indices()
+            .rfind(|(_, c)| c.is_whitespace())
+            .map(|(idx, c)| idx + c.len_utf8())
+            .unwrap_or(0);
+        let end_rel_idx = after_cursor
+            .char_indices()
+            .find(|(_, c)| c.is_whitespace())
+            .map(|(idx, _)| idx)
+            .unwrap_or(after_cursor.len());
+        let end_idx = safe_cursor + end_rel_idx;
+        (start_idx < end_idx).then_some((start_idx, end_idx))
+    }
+
     /// Extract the `@token` that the cursor is currently positioned on, if any.
     ///
     /// The returned string **does not** include the leading `@`.
@@ -1120,6 +1228,65 @@ impl ChatComposer {
 
     fn current_weave_token(&self) -> Option<String> {
         Self::current_prefixed_token(&self.textarea, '#', true)
+    }
+
+    fn current_weave_command_token(&self) -> Option<String> {
+        let agents = self.weave_agents.as_ref()?;
+        let text = self.textarea.text();
+        let (start_idx, end_idx) = Self::current_token_bounds(text, self.textarea.cursor())?;
+        let token = text.get(start_idx..end_idx)?;
+        if !token.starts_with('/') {
+            return None;
+        }
+        let line_start = text[..start_idx]
+            .rfind('\n')
+            .map(|idx| idx + 1)
+            .unwrap_or(0);
+        let line_prefix = &text[line_start..start_idx];
+        if !Self::line_has_weave_mention(line_prefix, agents, self.weave_agent_id.as_deref()) {
+            return None;
+        }
+        let query = token.trim_start_matches('/');
+        if query.is_empty() {
+            return Some(String::new());
+        }
+        let commands = [
+            WeaveCommand::New,
+            WeaveCommand::Interrupt,
+            WeaveCommand::Compact,
+            WeaveCommand::Review,
+        ];
+        let has_match = commands
+            .iter()
+            .any(|cmd| fuzzy_match(cmd.command(), query).is_some());
+        has_match.then(|| query.to_string())
+    }
+
+    fn line_has_weave_mention(
+        text: &str,
+        agents: &[WeaveAgent],
+        self_agent_id: Option<&str>,
+    ) -> bool {
+        let mut mention_lookup: HashMap<String, &WeaveAgent> = HashMap::new();
+        for agent in agents {
+            mention_lookup.insert(agent.mention_text(), agent);
+        }
+        for token in text.split_whitespace() {
+            let Some(mention) = token.strip_prefix('#') else {
+                continue;
+            };
+            if mention.is_empty() {
+                continue;
+            }
+            let Some(agent) = mention_lookup.get(mention) else {
+                continue;
+            };
+            if self_agent_id == Some(agent.id.as_str()) {
+                continue;
+            }
+            return true;
+        }
+        false
     }
 
     /// Replace the active `@token` (the one under the cursor) with `path`.
@@ -1233,6 +1400,32 @@ impl ChatComposer {
 
         let mut new_text =
             String::with_capacity(text.len() - (end_idx - start_idx) + inserted.len() + 1);
+        new_text.push_str(&text[..start_idx]);
+        new_text.push_str(&inserted);
+        new_text.push(' ');
+        new_text.push_str(&text[end_idx..]);
+
+        self.textarea.set_text(&new_text);
+        let new_cursor = start_idx.saturating_add(inserted.len()).saturating_add(1);
+        self.textarea.set_cursor(new_cursor);
+    }
+
+    fn insert_weave_control_command(&mut self, command: WeaveCommand) {
+        let cursor_offset = self.textarea.cursor();
+        let text = self.textarea.text();
+        let safe_cursor = Self::clamp_to_char_boundary(text, cursor_offset);
+        let command = command.command();
+        let inserted = format!("/{command}");
+
+        let (start_idx, end_idx) =
+            Self::current_token_bounds(text, safe_cursor).unwrap_or((safe_cursor, safe_cursor));
+
+        let mut new_text = String::with_capacity(
+            text.len()
+                .saturating_sub(end_idx.saturating_sub(start_idx))
+                .saturating_add(inserted.len())
+                .saturating_add(1),
+        );
         new_text.push_str(&text[..start_idx]);
         new_text.push_str(&inserted);
         new_text.push(' ');
@@ -1883,20 +2076,29 @@ impl ChatComposer {
         // synchronization so nothing steals focus from continued history navigation.
         if browsing_history {
             self.active_popup = ActivePopup::None;
+            self.dismissed_weave_popup_token = None;
+            self.current_weave_query = None;
+            self.dismissed_weave_command_popup_token = None;
+            self.current_weave_command_query = None;
             return;
         }
         let skill_token = self.current_skill_token();
         let weave_token = self.current_weave_token();
+        let weave_command_token = self.current_weave_command_token();
 
-        let allow_command_popup =
-            file_token.is_none() && skill_token.is_none() && weave_token.is_none();
+        let allow_command_popup = file_token.is_none()
+            && skill_token.is_none()
+            && weave_token.is_none()
+            && weave_command_token.is_none();
         self.sync_command_popup(allow_command_popup);
 
         if matches!(self.active_popup, ActivePopup::Command(_)) {
             self.dismissed_file_popup_token = None;
             self.dismissed_weave_popup_token = None;
+            self.dismissed_weave_command_popup_token = None;
             self.dismissed_skill_popup_token = None;
             self.current_weave_query = None;
+            self.current_weave_command_query = None;
             return;
         }
 
@@ -1906,6 +2108,13 @@ impl ChatComposer {
         }
         self.dismissed_weave_popup_token = None;
         self.current_weave_query = None;
+
+        if let Some(token) = weave_command_token {
+            self.sync_weave_command_popup(token);
+            return;
+        }
+        self.dismissed_weave_command_popup_token = None;
+        self.current_weave_command_query = None;
 
         if let Some(token) = skill_token {
             self.sync_skill_popup(token);
@@ -1921,7 +2130,10 @@ impl ChatComposer {
         self.dismissed_file_popup_token = None;
         if matches!(
             self.active_popup,
-            ActivePopup::File(_) | ActivePopup::WeaveAgent(_) | ActivePopup::Skill(_)
+            ActivePopup::File(_)
+                | ActivePopup::WeaveAgent(_)
+                | ActivePopup::WeaveCommand(_)
+                | ActivePopup::Skill(_)
         ) {
             self.active_popup = ActivePopup::None;
         }
@@ -2107,6 +2319,26 @@ impl ChatComposer {
         self.dismissed_weave_popup_token = None;
     }
 
+    fn sync_weave_command_popup(&mut self, query: String) {
+        if self.dismissed_weave_command_popup_token.as_ref() == Some(&query) {
+            return;
+        }
+
+        self.current_weave_command_query = Some(query.clone());
+        match &mut self.active_popup {
+            ActivePopup::WeaveCommand(popup) => {
+                popup.set_query(&query);
+            }
+            _ => {
+                let mut popup = WeaveCommandPopup::new();
+                popup.set_query(&query);
+                self.active_popup = ActivePopup::WeaveCommand(popup);
+            }
+        }
+
+        self.dismissed_weave_command_popup_token = None;
+    }
+
     fn sync_skill_popup(&mut self, query: String) {
         if self.dismissed_skill_popup_token.as_ref() == Some(&query) {
             return;
@@ -2205,6 +2437,7 @@ impl Renderable for ChatComposer {
                 ActivePopup::Command(c) => c.calculate_required_height(width),
                 ActivePopup::File(c) => c.calculate_required_height(),
                 ActivePopup::WeaveAgent(c) => c.calculate_required_height(width),
+                ActivePopup::WeaveCommand(c) => c.calculate_required_height(width),
                 ActivePopup::Skill(c) => c.calculate_required_height(width),
             }
     }
@@ -2219,6 +2452,9 @@ impl Renderable for ChatComposer {
                 popup.render_ref(popup_rect, buf);
             }
             ActivePopup::WeaveAgent(popup) => {
+                popup.render_ref(popup_rect, buf);
+            }
+            ActivePopup::WeaveCommand(popup) => {
                 popup.render_ref(popup_rect, buf);
             }
             ActivePopup::Skill(popup) => {
@@ -2361,6 +2597,7 @@ mod tests {
     use crate::bottom_pane::chat_composer::LARGE_PASTE_CHAR_THRESHOLD;
     use crate::bottom_pane::prompt_args::extract_positional_args_for_prompt_line;
     use crate::bottom_pane::textarea::TextArea;
+    use crate::weave_client::WeaveAgent;
     use tokio::sync::mpsc::unbounded_channel;
 
     #[test]
@@ -4549,6 +4786,62 @@ mod tests {
             matches!(composer.active_popup, ActivePopup::None),
             "'/zzz' should not activate slash popup because it is not a prefix of any built-in command"
         );
+    }
+
+    #[test]
+    fn weave_command_popup_activates_for_mention_slash() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+        composer.set_weave_agent_identity("self".to_string());
+        composer.set_weave_agents(Some(vec![WeaveAgent {
+            id: "agent-b".to_string(),
+            name: Some("agent-b".to_string()),
+        }]));
+
+        let text = "#agent-b /".to_string();
+        composer.set_text_content(text.clone());
+        composer.textarea.set_cursor(text.len());
+        composer.sync_popups();
+
+        assert!(
+            matches!(composer.active_popup, ActivePopup::WeaveCommand(_)),
+            "expected weave command popup to activate for '#agent-b /'"
+        );
+    }
+
+    #[test]
+    fn weave_command_popup_inserts_command_on_enter() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+        composer.set_weave_agent_identity("self".to_string());
+        composer.set_weave_agents(Some(vec![WeaveAgent {
+            id: "agent-b".to_string(),
+            name: Some("agent-b".to_string()),
+        }]));
+
+        let text = "#agent-b /".to_string();
+        composer.set_text_content(text.clone());
+        composer.textarea.set_cursor(text.len());
+        composer.sync_popups();
+
+        let (result, _redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(result, InputResult::None);
+        assert_eq!(composer.textarea.text(), "#agent-b /new ");
     }
 
     #[test]

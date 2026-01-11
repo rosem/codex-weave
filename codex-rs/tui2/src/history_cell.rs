@@ -1270,7 +1270,7 @@ pub(crate) fn new_web_search_call(query: String) -> PrefixedWrappedHistoryCell {
 
 pub(crate) fn new_weave_outbound(
     sender: String,
-    recipients: Vec<String>,
+    recipients: Vec<(String, bool)>,
     message: String,
     sender_is_owner: bool,
 ) -> PrefixedWrappedHistoryCell {
@@ -1281,7 +1281,13 @@ pub(crate) fn new_weave_outbound(
     };
     let targets = recipients
         .into_iter()
-        .map(|name| format!("#{name}"))
+        .map(|(name, is_owner)| {
+            if is_owner {
+                format!("#{name} (owner)")
+            } else {
+                format!("#{name}")
+            }
+        })
         .collect::<Vec<_>>()
         .join(", ");
     let label = format!("{sender} → {targets}: ");
@@ -1293,9 +1299,14 @@ pub(crate) fn new_weave_inbound(
     src: String,
     dst: String,
     message: String,
+    sender_is_owner: bool,
     dst_is_owner: bool,
 ) -> PrefixedWrappedHistoryCell {
-    let sender = format!("#{src}");
+    let sender = if sender_is_owner {
+        format!("#{src} (owner)")
+    } else {
+        format!("#{src}")
+    };
     let target = if dst_is_owner {
         format!("#{dst} (owner)")
     } else {
