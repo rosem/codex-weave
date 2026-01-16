@@ -139,10 +139,21 @@ async fn check_for_update(version_file: &Path) -> anyhow::Result<()> {
 }
 
 fn is_newer(latest: &str, current: &str) -> Option<bool> {
+    if is_weave_version(latest) != is_weave_version(current) {
+        return None;
+    }
+
     match (parse_version(latest), parse_version(current)) {
         (Some(l), Some(c)) => Some(l > c),
         _ => None,
     }
+}
+
+fn is_weave_version(version: &str) -> bool {
+    version
+        .trim()
+        .split_once('-')
+        .map_or(false, |(_, suffix)| suffix.starts_with("weave."))
 }
 
 fn extract_version_from_cask(cask_contents: &str) -> anyhow::Result<String> {
@@ -222,6 +233,7 @@ fn parse_version(v: &str) -> Option<(u64, u64, u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn parses_version_from_cask_contents() {
@@ -276,5 +288,11 @@ mod tests {
     #[test]
     fn weave_suffix_versions_compare() {
         assert_eq!(is_newer("0.80.0-weave.3", "0.80.0-weave.1"), Some(true));
+    }
+
+    #[test]
+    fn weave_versions_do_not_compare_to_plain_versions() {
+        assert_eq!(is_newer("0.86.0", "0.80.0-weave.3"), None);
+        assert_eq!(is_newer("0.80.0-weave.4", "0.80.0"), None);
     }
 }

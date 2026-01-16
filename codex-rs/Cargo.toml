@@ -45,9 +45,8 @@ members = [
     "utils/pty",
     "utils/readiness",
     "utils/string",
+    "weave-client",
     "weave-runtime",
-    "weave-transport-http",
-    "weave-transport-uds",
     "codex-client",
     "codex-api",
 ]
@@ -104,9 +103,8 @@ codex-utils-json-to-toml = { path = "utils/json-to-toml" }
 codex-utils-pty = { path = "utils/pty" }
 codex-utils-readiness = { path = "utils/readiness" }
 codex-utils-string = { path = "utils/string" }
+codex-weave-client = { path = "weave-client" }
 codex-weave-runtime = { path = "weave-runtime" }
-codex-weave-transport-http = { path = "weave-transport-http" }
-codex-weave-transport-uds = { path = "weave-transport-uds" }
 codex-windows-sandbox = { path = "windows-sandbox-rs" }
 core_test_support = { path = "core/tests/common" }
 exec_server_test_support = { path = "exec-server/tests/common" }
