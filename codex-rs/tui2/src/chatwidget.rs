@@ -5012,6 +5012,7 @@ impl ChatWidget {
             message_id,
             src,
             src_name,
+            meta: _,
             text,
             kind,
             conversation_id,

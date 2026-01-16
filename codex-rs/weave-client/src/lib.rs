@@ -1,3 +1,5 @@
+use serde_json::Value;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WeaveSession {
     pub id: String,
@@ -52,6 +54,7 @@ pub struct WeaveIncomingMessage {
     pub message_id: String,
     pub src: String,
     pub src_name: Option<String>,
+    pub meta: Option<Value>,
     pub text: String,
     pub kind: WeaveMessageKind,
     pub conversation_id: String,
@@ -177,6 +180,14 @@ mod platform {
     }
 
     #[derive(Debug, Serialize, Deserialize)]
+    struct WeaveAck {
+        #[serde(default)]
+        mode: Option<String>,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
     struct WeaveEnvelope {
         v: u8,
         #[serde(rename = "type")]
@@ -205,9 +216,13 @@ mod platform {
         #[serde(skip_serializing_if = "Option::is_none")]
         size: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        meta: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         status: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<WeaveErrorDetail>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        ack: Option<WeaveAck>,
     }
 
     #[derive(Debug, Deserialize)]
@@ -257,7 +272,6 @@ mod platform {
             WeaveAgentSender {
                 session_id: self.session_id.clone(),
                 agent_id: self.agent_id.clone(),
-                agent_name: self.agent_name.clone(),
                 seq: Arc::clone(&self.seq),
                 outgoing_tx: self.outgoing_tx.clone(),
             }
@@ -520,8 +534,10 @@ mod platform {
             payload_ref: None,
             content_type: None,
             size: None,
+            meta: None,
             status: None,
             error: None,
+            ack: None,
         }
     }
 
@@ -657,7 +673,6 @@ mod platform {
         action_index: usize,
         reply_to_action_id: Option<&str>,
         kind: Option<super::WeaveMessageKind>,
-        sender_name: Option<&str>,
     ) -> Value {
         let mut payload = serde_json::Map::new();
         payload.insert("type".to_string(), json!("message"));
@@ -670,9 +685,6 @@ mod platform {
         }
         if let Some(kind) = kind {
             payload.insert("kind".to_string(), json!(kind_label(kind)));
-        }
-        if let Some(sender_name) = sender_name.map(str::trim).filter(|name| !name.is_empty()) {
-            payload.insert("sender_name".to_string(), json!(sender_name));
         }
         payload.insert("text".to_string(), json!(text));
         payload.insert("action_id".to_string(), json!(action_id));
@@ -777,11 +789,18 @@ mod platform {
         incoming_tx: mpsc::UnboundedSender<WeaveIncomingMessage>,
     }
 
+    struct IncomingMessageContext {
+        session_id: String,
+        message_id: String,
+        src: String,
+        src_name: Option<String>,
+        meta: Option<Value>,
+    }
+
     #[derive(Clone, Debug)]
     pub struct WeaveAgentSender {
         session_id: String,
         agent_id: String,
-        agent_name: String,
         seq: Arc<AtomicU64>,
         outgoing_tx: mpsc::UnboundedSender<WeaveOutgoingRequest>,
     }
@@ -807,7 +826,6 @@ mod platform {
                 0,
                 reply_to_action_id,
                 Some(super::WeaveMessageKind::Reply),
-                Some(self.agent_name.as_str()),
             )];
             let payload = action_submit_payload(&group_id, actions, metadata);
             self.send_action_submit(payload).await
@@ -980,8 +998,6 @@ mod platform {
             None,
         );
         request.corr = Some(corr);
-        request.dst = envelope.dst.clone();
-        request.topic = envelope.topic.clone();
         Some(request)
     }
 
@@ -992,15 +1008,12 @@ mod platform {
         if envelope.src == agent_id || envelope.src == agent_name {
             return false;
         }
-        payload_requests_ack(envelope.payload.as_ref())
+        ack_requests_auto(envelope.ack.as_ref())
             && is_direct_inbox_for_agent(envelope, agent_id, agent_name)
     }
 
-    fn payload_requests_ack(payload: Option<&Value>) -> bool {
-        payload
-            .and_then(Value::as_object)
-            .and_then(|map| map.get("ack"))
-            .is_some_and(|ack| matches!(ack, Value::Object(_) | Value::Bool(true)))
+    fn ack_requests_auto(ack: Option<&WeaveAck>) -> bool {
+        matches!(ack.and_then(|ack| ack.mode.as_deref()), Some("auto"))
     }
 
     fn build_incoming_messages(
@@ -1015,54 +1028,32 @@ mod platform {
             Some(session_id) => session_id.clone(),
             None => return Vec::new(),
         };
-        let src = envelope.src.clone();
-        let message_id = envelope.id.clone();
         let payload = envelope.payload.as_ref();
+        let ctx = IncomingMessageContext {
+            session_id,
+            message_id: envelope.id.clone(),
+            src: envelope.src.clone(),
+            src_name: meta_origin_src_name(envelope.meta.as_ref()),
+            meta: envelope.meta.clone(),
+        };
         match envelope.r#type.as_str() {
             "action.submit" => payload
-                .map(|payload| {
-                    build_action_dispatch_messages(
-                        payload,
-                        &session_id,
-                        &message_id,
-                        &src,
-                        agent_id,
-                        agent_name,
-                    )
-                })
+                .map(|payload| build_action_dispatch_messages(payload, &ctx, agent_id, agent_name))
                 .unwrap_or_default(),
             _ if !is_direct_message_for_agent(envelope, agent_id, agent_name) => Vec::new(),
             "action.result" => payload
-                .and_then(|payload| {
-                    build_action_result_message(
-                        payload,
-                        &session_id,
-                        &message_id,
-                        &src,
-                        payload_sender_name(Some(payload)),
-                    )
-                })
+                .and_then(|payload| build_action_result_message(payload, &ctx))
                 .into_iter()
                 .collect(),
-            "message.created" | "message.send" => build_message_payload_message(
-                envelope,
-                &session_id,
-                &message_id,
-                &src,
-                payload_sender_name(payload),
-            )
-            .into_iter()
-            .collect(),
+            "message.created" | "message.send" => build_message_payload_message(envelope, &ctx)
+                .into_iter()
+                .collect(),
             "task.updated" => payload
-                .and_then(|payload| {
-                    build_task_update_message(payload, &session_id, &message_id, &src)
-                })
+                .and_then(|payload| build_task_update_message(payload, &ctx))
                 .into_iter()
                 .collect(),
             "task.done" => payload
-                .and_then(|payload| {
-                    build_task_done_message(payload, &session_id, &message_id, &src)
-                })
+                .and_then(|payload| build_task_done_message(payload, &ctx))
                 .into_iter()
                 .collect(),
             _ => Vec::new(),
@@ -1142,11 +1133,10 @@ mod platform {
         }
     }
 
-    fn payload_sender_name(payload: Option<&Value>) -> Option<String> {
-        let payload = payload?;
-        let map = payload.as_object()?;
-        let name = map.get("sender_name")?.as_str()?;
-        let name = name.trim();
+    fn meta_origin_src_name(meta: Option<&Value>) -> Option<String> {
+        let meta = meta?.as_object()?;
+        let weave = meta.get("weave")?.as_object()?;
+        let name = weave.get("origin_src_name")?.as_str()?.trim();
         if name.is_empty() {
             None
         } else {
@@ -1225,18 +1215,15 @@ mod platform {
 
     fn build_message_payload_message(
         envelope: &WeaveEnvelope,
-        session_id: &str,
-        message_id: &str,
-        src: &str,
-        src_name: Option<String>,
+        ctx: &IncomingMessageContext,
     ) -> Option<WeaveIncomingMessage> {
         let payload = envelope.payload.as_ref();
         let text = message_payload_text(envelope, payload)?;
         let kind = payload_kind(payload);
         let conversation_id =
-            payload_conversation_id(payload).unwrap_or_else(|| message_id.to_string());
+            payload_conversation_id(payload).unwrap_or_else(|| ctx.message_id.clone());
         let conversation_owner =
-            payload_conversation_owner(payload).unwrap_or_else(|| src.to_string());
+            payload_conversation_owner(payload).unwrap_or_else(|| ctx.src.clone());
         let parent_message_id = payload_parent_message_id(payload);
         let reply_to_action_id = payload_reply_to_action_id(payload);
         let task_id = payload_task_id(payload);
@@ -1245,10 +1232,11 @@ mod platform {
             || parent_message_id.is_some()
             || task_id.is_some();
         Some(WeaveIncomingMessage {
-            session_id: session_id.to_string(),
-            message_id: message_id.to_string(),
-            src: src.to_string(),
-            src_name,
+            session_id: ctx.session_id.clone(),
+            message_id: ctx.message_id.clone(),
+            src: ctx.src.clone(),
+            src_name: ctx.src_name.clone(),
+            meta: ctx.meta.clone(),
             text,
             kind,
             conversation_id,
@@ -1270,9 +1258,7 @@ mod platform {
 
     fn build_action_dispatch_messages(
         payload: &Value,
-        session_id: &str,
-        message_id: &str,
-        src: &str,
+        ctx: &IncomingMessageContext,
         agent_id: &str,
         agent_name: &str,
     ) -> Vec<WeaveIncomingMessage> {
@@ -1286,7 +1272,7 @@ mod platform {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string)
-            .unwrap_or_else(|| message_id.to_string());
+            .unwrap_or_else(|| ctx.message_id.clone());
         let context = map.get("context").and_then(Value::as_object);
         let conversation_id = context
             .and_then(|ctx| ctx.get("context_id"))
@@ -1294,14 +1280,14 @@ mod platform {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string)
-            .unwrap_or_else(|| message_id.to_string());
+            .unwrap_or_else(|| ctx.message_id.clone());
         let conversation_owner = context
             .and_then(|ctx| ctx.get("owner_id"))
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string)
-            .unwrap_or_else(|| src.to_string());
+            .unwrap_or_else(|| ctx.src.clone());
         let parent_message_id = context
             .and_then(|ctx| ctx.get("parent_message_id"))
             .and_then(Value::as_str)
@@ -1376,17 +1362,12 @@ mod platform {
                             _ => super::WeaveMessageKind::User,
                         })
                         .unwrap_or(super::WeaveMessageKind::User);
-                    let src_name = action_map
-                        .get("sender_name")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_string);
                     let message = WeaveIncomingMessage {
-                        session_id: session_id.to_string(),
-                        message_id: message_id.to_string(),
-                        src: src.to_string(),
-                        src_name,
+                        session_id: ctx.session_id.clone(),
+                        message_id: ctx.message_id.clone(),
+                        src: ctx.src.clone(),
+                        src_name: ctx.src_name.clone(),
+                        meta: ctx.meta.clone(),
                         text,
                         kind,
                         conversation_id: conversation_id.clone(),
@@ -1422,13 +1403,13 @@ mod platform {
                     if tool.is_none() {
                         if command.is_empty() {
                             warn!(
-                                src = %src,
+                                src = %ctx.src,
                                 action_group_id = %group_id,
                                 "Weave control action missing command"
                             );
                         } else {
                             warn!(
-                                src = %src,
+                                src = %ctx.src,
                                 action_group_id = %group_id,
                                 command = %command,
                                 "Unknown Weave control command"
@@ -1440,10 +1421,11 @@ mod platform {
                         defer_messages = true;
                     }
                     let message = WeaveIncomingMessage {
-                        session_id: session_id.to_string(),
-                        message_id: message_id.to_string(),
-                        src: src.to_string(),
-                        src_name: None,
+                        session_id: ctx.session_id.clone(),
+                        message_id: ctx.message_id.clone(),
+                        src: ctx.src.clone(),
+                        src_name: ctx.src_name.clone(),
+                        meta: ctx.meta.clone(),
                         text: String::new(),
                         kind: super::WeaveMessageKind::Control,
                         conversation_id: conversation_id.clone(),
@@ -1471,10 +1453,7 @@ mod platform {
 
     fn build_action_result_message(
         payload: &Value,
-        session_id: &str,
-        message_id: &str,
-        src: &str,
-        src_name: Option<String>,
+        ctx: &IncomingMessageContext,
     ) -> Option<WeaveIncomingMessage> {
         let map = payload.as_object()?;
         let group_id = map.get("group_id")?.as_str()?.trim();
@@ -1514,14 +1493,15 @@ mod platform {
                 .map(str::to_string),
         };
         Some(WeaveIncomingMessage {
-            session_id: session_id.to_string(),
-            message_id: message_id.to_string(),
-            src: src.to_string(),
-            src_name,
+            session_id: ctx.session_id.clone(),
+            message_id: ctx.message_id.clone(),
+            src: ctx.src.clone(),
+            src_name: ctx.src_name.clone(),
+            meta: ctx.meta.clone(),
             text: String::new(),
             kind: super::WeaveMessageKind::Control,
-            conversation_id: message_id.to_string(),
-            conversation_owner: src.to_string(),
+            conversation_id: ctx.message_id.clone(),
+            conversation_owner: ctx.src.clone(),
             parent_message_id: None,
             task_id: None,
             tool: None,
@@ -1539,9 +1519,7 @@ mod platform {
 
     fn build_task_update_message(
         payload: &Value,
-        session_id: &str,
-        message_id: &str,
-        src: &str,
+        ctx: &IncomingMessageContext,
     ) -> Option<WeaveIncomingMessage> {
         let map = payload.as_object()?;
         let task_id = map.get("task_id")?.as_str()?.trim();
@@ -1550,9 +1528,9 @@ mod platform {
             return None;
         }
         let conversation_id =
-            payload_conversation_id(Some(payload)).unwrap_or_else(|| message_id.to_string());
+            payload_conversation_id(Some(payload)).unwrap_or_else(|| ctx.message_id.clone());
         let conversation_owner =
-            payload_conversation_owner(Some(payload)).unwrap_or_else(|| src.to_string());
+            payload_conversation_owner(Some(payload)).unwrap_or_else(|| ctx.src.clone());
         let parent_message_id = payload_parent_message_id(Some(payload));
         let has_conversation_metadata = payload_conversation_id(Some(payload)).is_some()
             || payload_conversation_owner(Some(payload)).is_some()
@@ -1562,10 +1540,11 @@ mod platform {
             status: status.to_string(),
         };
         Some(WeaveIncomingMessage {
-            session_id: session_id.to_string(),
-            message_id: message_id.to_string(),
-            src: src.to_string(),
+            session_id: ctx.session_id.clone(),
+            message_id: ctx.message_id.clone(),
+            src: ctx.src.clone(),
             src_name: None,
+            meta: ctx.meta.clone(),
             text: String::new(),
             kind: super::WeaveMessageKind::Control,
             conversation_id,
@@ -1587,9 +1566,7 @@ mod platform {
 
     fn build_task_done_message(
         payload: &Value,
-        session_id: &str,
-        message_id: &str,
-        src: &str,
+        ctx: &IncomingMessageContext,
     ) -> Option<WeaveIncomingMessage> {
         let map = payload.as_object()?;
         let task_id = map.get("task_id")?.as_str()?.trim();
@@ -1597,9 +1574,9 @@ mod platform {
             return None;
         }
         let conversation_id =
-            payload_conversation_id(Some(payload)).unwrap_or_else(|| message_id.to_string());
+            payload_conversation_id(Some(payload)).unwrap_or_else(|| ctx.message_id.clone());
         let conversation_owner =
-            payload_conversation_owner(Some(payload)).unwrap_or_else(|| src.to_string());
+            payload_conversation_owner(Some(payload)).unwrap_or_else(|| ctx.src.clone());
         let parent_message_id = payload_parent_message_id(Some(payload));
         let has_conversation_metadata = payload_conversation_id(Some(payload)).is_some()
             || payload_conversation_owner(Some(payload)).is_some()
@@ -1615,10 +1592,11 @@ mod platform {
             summary,
         };
         Some(WeaveIncomingMessage {
-            session_id: session_id.to_string(),
-            message_id: message_id.to_string(),
-            src: src.to_string(),
+            session_id: ctx.session_id.clone(),
+            message_id: ctx.message_id.clone(),
+            src: ctx.src.clone(),
             src_name: None,
+            meta: ctx.meta.clone(),
             text: String::new(),
             kind: super::WeaveMessageKind::Control,
             conversation_id,
