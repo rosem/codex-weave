@@ -660,6 +660,14 @@ fn format_weave_prompt(ctx: WeavePromptContext<'_>) -> String {
                 "Use type \"relay_actions\" with an `actions` array to send messages or control commands."
                     .to_string(),
             );
+            lines.push(
+                "If you need multiple actions (messages and/or controls), include them in a single `actions` array in one relay_actions response."
+                    .to_string(),
+            );
+            lines.push(
+                "Do not split a message and a control across separate turns; send task_done only after all relay_actions are sent."
+                    .to_string(),
+            );
             lines.push("Action types: \"message\", \"control\".".to_string());
             lines.push(
                 "When the task is complete, respond with type \"task_done\" and a brief summary for the local user.".to_string(),
@@ -939,10 +947,8 @@ impl ChatWidget {
                 return;
             }
             message = output;
-        } else if parse_weave_relay_output(&message).is_some() {
-            self.add_to_history(history_cell::new_error_event(
-                "Unexpected relay output; start a weave task to use relay_actions.".to_string(),
-            ));
+        } else if self.handle_weave_relay_output(&message) {
+            self.relay_output_consumed = true;
             self.handle_stream_finished();
             self.request_redraw();
             return;
@@ -1043,11 +1049,9 @@ impl ChatWidget {
             && last_agent_message
                 .as_ref()
                 .is_some_and(|message| !message.trim().is_empty())
-            && parse_weave_relay_output(last_agent_message.as_deref().unwrap_or_default()).is_some()
+            && self.handle_weave_relay_output(last_agent_message.as_deref().unwrap_or_default())
         {
-            self.add_to_history(history_cell::new_error_event(
-                "Unexpected relay output; start a weave task to use relay_actions.".to_string(),
-            ));
+            self.relay_output_consumed = true;
             last_agent_message = None;
         }
         self.relay_output_consumed = false;
@@ -2947,16 +2951,46 @@ impl ChatWidget {
     }
 
     fn handle_weave_relay_output(&mut self, output: &str) -> bool {
-        let Some(targets) = self.pending_weave_relay.clone() else {
+        let pending_targets = self.pending_weave_relay.clone();
+        let Some(output) = parse_weave_relay_output(output) else {
+            if pending_targets.is_some() {
+                self.add_to_history(history_cell::new_error_event(
+                    "Invalid relay output; respond with a single-line JSON object.".to_string(),
+                ));
+                return true;
+            }
             return false;
         };
-        self.weave_relay_buffer.clear();
-        let Some(output) = parse_weave_relay_output(output) else {
+
+        let targets = if let Some(targets) = pending_targets {
+            targets
+        } else if let Some(active_targets) = self.active_weave_relay.clone() {
+            match output {
+                WeaveRelayOutput::RelayActions { ref actions } => {
+                    if let Err(message) =
+                        self.validate_relay_actions_scope(actions, &active_targets)
+                    {
+                        self.add_to_history(history_cell::new_error_event(message));
+                        return true;
+                    }
+                    active_targets
+                }
+                WeaveRelayOutput::TaskDone { .. } => {
+                    self.add_to_history(history_cell::new_error_event(
+                        "Unexpected relay output; task_done is only valid when responding to a weave task."
+                            .to_string(),
+                    ));
+                    return true;
+                }
+            }
+        } else {
             self.add_to_history(history_cell::new_error_event(
-                "Invalid relay output; respond with a single-line JSON object.".to_string(),
+                "Unexpected relay output; start a weave task to use relay_actions.".to_string(),
             ));
             return true;
         };
+
+        self.weave_relay_buffer.clear();
         self.pending_weave_relay = None;
 
         match output {
@@ -2982,6 +3016,35 @@ impl ChatWidget {
                 }
             }
         }
+    }
+
+    fn validate_relay_actions_scope(
+        &self,
+        actions: &[WeaveRelayAction],
+        targets: &WeaveRelayTargets,
+    ) -> Result<(), String> {
+        let Some(agents) = self.weave_agents.as_ref() else {
+            return Err("Weave agents unavailable for relay.".to_string());
+        };
+        for action in actions {
+            let dst = match action {
+                WeaveRelayAction::Message { dst, .. } => dst,
+                WeaveRelayAction::Control { dst, .. } => dst,
+            };
+            let dst = dst.trim();
+            if dst.is_empty() {
+                return Err("Weave relay target is empty.".to_string());
+            }
+            let resolved =
+                resolve_weave_relay_targets(agents, std::slice::from_ref(&dst.to_string()));
+            if resolved.is_empty() {
+                return Err("Weave relay did not match any targets.".to_string());
+            }
+            if resolved.iter().any(|agent| !targets.allows(agent)) {
+                return Err("Weave relay target is outside the active task.".to_string());
+            }
+        }
+        Ok(())
     }
 
     fn apply_weave_relay_actions(
@@ -5599,6 +5662,20 @@ impl ChatWidget {
                 self.active_weave_control_context = Some(WeaveControlContext {
                     sender_id: sender_id.to_string(),
                 });
+                if let Some(session_id) = self.selected_weave_session_id.clone() {
+                    self.active_weave_reply_target = Some(WeaveReplyTarget {
+                        session_id,
+                        agent_id: sender_id.to_string(),
+                        display_name: sender.to_string(),
+                        conversation_id: conversation_id.to_string(),
+                        conversation_owner: conversation_owner.to_string(),
+                        parent_message_id: None,
+                        task_id: None,
+                        action_group_id: None,
+                        action_id: action_id.map(str::to_string),
+                        action_index: None,
+                    });
+                }
                 self.add_to_history(history_cell::new_info_event(
                     format!("Weave control: /review requested by {sender}."),
                     None,
