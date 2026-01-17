@@ -5717,9 +5717,14 @@ impl ChatWidget {
     }
 
     pub(crate) fn on_weave_action_submit_failed(&mut self, group_id: &str) {
-        if self.clear_pending_weave_actions_for_group(group_id) {
-            self.maybe_send_next_queued_input();
+        let cleared = self.clear_pending_weave_actions_for_group(group_id);
+        if cleared.is_empty() {
+            return;
         }
+        for agent_id in cleared {
+            self.pending_weave_relay_messages.remove(&agent_id);
+        }
+        self.maybe_send_next_queued_input();
     }
 
     fn handle_weave_task_update(&mut self, sender_id: &str, update: WeaveTaskUpdate) {
@@ -6028,15 +6033,15 @@ impl ChatWidget {
         });
     }
 
-    fn clear_pending_weave_actions_for_group(&mut self, group_id: &str) -> bool {
-        let mut removed = false;
-        for state in self.weave_target_states.values_mut() {
+    fn clear_pending_weave_actions_for_group(&mut self, group_id: &str) -> Vec<String> {
+        let mut removed = Vec::new();
+        for (agent_id, state) in self.weave_target_states.iter_mut() {
             let before = state.pending_actions.len();
             state
                 .pending_actions
                 .retain(|_, pending| pending.group_id != group_id);
             if state.pending_actions.len() != before {
-                removed = true;
+                removed.push(agent_id.to_string());
             }
         }
         removed
@@ -7909,7 +7914,7 @@ fn parse_weave_control_actions(
         }
         let command_count = tokens
             .iter()
-            .filter(|token| is_command_token(token))
+            .filter(|token| is_command_token(*token))
             .count();
         if command_count == 0 {
             kept_lines.push(line);
@@ -7917,15 +7922,18 @@ fn parse_weave_control_actions(
             continue;
         }
         if tokens.contains(&"/review") {
-            if command_count != 1 {
-                kept_lines.push(line);
-                has_non_control_lines = true;
-                continue;
-            }
             let review_index = tokens
                 .iter()
                 .position(|token| *token == "/review")
                 .unwrap_or(tokens.len());
+            if tokens[..review_index]
+                .iter()
+                .any(|token| is_command_token(*token))
+            {
+                kept_lines.push(line);
+                has_non_control_lines = true;
+                continue;
+            }
             let mut targets = Vec::new();
             let mut seen_ids = HashSet::new();
             let mut invalid = false;
