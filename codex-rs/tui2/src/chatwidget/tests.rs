@@ -409,6 +409,7 @@ async fn make_chatwidget_manual(
         weave_agent_connection: None,
         weave_agents: None,
         pending_weave_relay: None,
+        pending_weave_relay_messages: HashMap::new(),
         active_weave_relay: None,
         active_weave_plan: None,
         pending_weave_plan: false,

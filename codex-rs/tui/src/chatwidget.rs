@@ -399,6 +399,7 @@ pub(crate) struct ChatWidget {
     weave_inbound_task_ids: HashMap<String, String>,
     weave_target_states: HashMap<String, WeaveRelayTargetState>,
     pending_weave_action_messages: VecDeque<WeaveIncomingMessage>,
+    pending_weave_relay_messages: HashMap<String, Vec<WeaveDeferredRelayMessage>>,
     pending_weave_new_session_result: Option<WeavePendingActionResult>,
     pending_weave_new_session_context: Option<WeavePendingNewSessionContext>,
     pending_weave_new_session: bool,
@@ -475,6 +476,7 @@ struct WeaveRelayTargetState {
 struct WeavePendingAction {
     group_id: String,
     expects_reply: bool,
+    blocks_outbound: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -490,6 +492,12 @@ struct WeaveControlContext {
 }
 
 #[derive(Clone, Debug)]
+struct WeaveDeferredRelayMessage {
+    owner_id: String,
+    text: String,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct WeavePendingActionResult {
     sender_id: String,
     group_id: String,
@@ -500,6 +508,8 @@ pub(crate) struct WeavePendingActionResult {
 #[derive(Clone, Debug)]
 pub(crate) struct WeavePendingNewSessionContext {
     group_id: String,
+    previous_conversation_id: String,
+    action_index: Option<usize>,
     conversation_id: String,
     conversation_owner: String,
     task_id: String,
@@ -880,6 +890,7 @@ impl ChatWidget {
         self.pending_weave_plan = false;
         self.weave_target_states.clear();
         self.weave_relay_buffer.clear();
+        self.pending_weave_relay_messages.clear();
         if !self.queued_user_messages.is_empty() {
             self.queued_user_messages.clear();
             self.refresh_queued_user_messages();
@@ -2042,6 +2053,7 @@ impl ChatWidget {
             weave_inbound_task_ids: HashMap::new(),
             weave_target_states: HashMap::new(),
             pending_weave_action_messages: VecDeque::new(),
+            pending_weave_relay_messages: HashMap::new(),
             pending_weave_new_session_result: None,
             pending_weave_new_session_context: None,
             pending_weave_new_session: false,
@@ -2155,6 +2167,7 @@ impl ChatWidget {
             weave_inbound_task_ids: HashMap::new(),
             weave_target_states: HashMap::new(),
             pending_weave_action_messages: VecDeque::new(),
+            pending_weave_relay_messages: HashMap::new(),
             pending_weave_new_session_result: None,
             pending_weave_new_session_context: None,
             pending_weave_new_session: false,
@@ -3256,6 +3269,22 @@ impl ChatWidget {
             return true;
         };
         let agents = agents.clone();
+        let mut blocking_targets: HashSet<String> = HashSet::new();
+        for action in &actions {
+            let WeaveRelayAction::Control { dst, command } = action else {
+                continue;
+            };
+            if !matches!(command, WeaveRelayCommand::New) {
+                continue;
+            }
+            let resolved =
+                resolve_weave_relay_targets(&agents, std::slice::from_ref(&dst.to_string()));
+            for agent in resolved {
+                if targets.allows(&agent) {
+                    blocking_targets.insert(agent.id.clone());
+                }
+            }
+        }
         let mut handled = false;
         let mut outbound_messages: Vec<(String, Vec<(String, bool)>)> = Vec::new();
         let mut outgoing: HashMap<String, WeaveRelayGroupPayload> = HashMap::new();
@@ -3279,6 +3308,7 @@ impl ChatWidget {
                         continue;
                     }
                     let tool = weave_tool_from_relay_command(command);
+                    let blocks_outbound = matches!(tool, WeaveTool::NewSession);
                     let resolved = resolve_weave_relay_targets(&agents, std::slice::from_ref(&dst))
                         .into_iter()
                         .filter(|agent| targets.allows(agent))
@@ -3318,6 +3348,7 @@ impl ChatWidget {
                             action_id.as_str(),
                             group.group_id.as_str(),
                             false,
+                            blocks_outbound,
                         );
                     }
                     handled = true;
@@ -3384,6 +3415,7 @@ impl ChatWidget {
                                 action_id.as_str(),
                                 group.group_id.as_str(),
                                 false,
+                                matches!(tool, WeaveTool::NewSession),
                             );
                         }
                     }
@@ -3394,6 +3426,16 @@ impl ChatWidget {
                     }
                     let mut successes = Vec::new();
                     for agent in &resolved {
+                        if blocking_targets.contains(agent.id.as_str())
+                            || self.has_blocking_weave_action(agent.id.as_str())
+                        {
+                            self.queue_deferred_weave_relay_message(
+                                agent.id.as_str(),
+                                targets.owner_id.as_str(),
+                                cleaned_text.to_string(),
+                            );
+                            continue;
+                        }
                         let action_id = new_weave_action_id();
                         let action_index = next_action_index();
                         let reply_to_action_id = self
@@ -3433,6 +3475,7 @@ impl ChatWidget {
                             action_id.as_str(),
                             group.group_id.as_str(),
                             true,
+                            false,
                         );
                         successes.push((agent.display_name(), targets.owner_id == agent.id));
                     }
@@ -3567,6 +3610,7 @@ impl ChatWidget {
             self.active_weave_relay = None;
             self.refresh_weave_session_label();
             self.clear_pending_weave_actions_for_targets(targets);
+            self.clear_pending_weave_relay_messages();
         }
         self.pending_weave_plan = false;
         if let Some(summary) = summary {
@@ -3585,6 +3629,7 @@ impl ChatWidget {
             self.pending_weave_plan = false;
             self.refresh_weave_session_label();
             self.clear_pending_weave_actions_for_targets(targets);
+            self.clear_pending_weave_relay_messages();
         }
     }
 
@@ -3613,6 +3658,7 @@ impl ChatWidget {
         self.pending_weave_relay = None;
         self.weave_relay_buffer.clear();
         self.clear_pending_weave_actions_for_targets(&active_relay);
+        self.clear_pending_weave_relay_messages();
         self.refresh_weave_session_label();
         true
     }
@@ -3686,6 +3732,7 @@ impl ChatWidget {
         self.pending_weave_relay = None;
         self.weave_relay_buffer.clear();
         self.clear_pending_weave_actions_for_targets(&targets);
+        self.clear_pending_weave_relay_messages();
         self.refresh_weave_session_label();
         let context_ids = targets
             .target_ids
@@ -5450,6 +5497,18 @@ impl ChatWidget {
             self.handle_weave_task_done(&message.src, task_done);
             return;
         }
+        if let Some(context) = self.pending_weave_new_session_context.as_ref()
+            && self.should_remap_pending_weave_message(context, &message)
+        {
+            if self.should_defer_weave_action_message() {
+                message.defer_until_ready = true;
+            } else {
+                message.conversation_id = context.conversation_id.clone();
+                message.conversation_owner = context.conversation_owner.clone();
+                message.task_id = Some(context.task_id.clone());
+                message.has_conversation_metadata = true;
+            }
+        }
         if message.defer_until_ready && self.should_defer_weave_action_message() {
             self.pending_weave_action_messages.push_back(message);
             return;
@@ -5626,6 +5685,7 @@ impl ChatWidget {
                 reply_target.task_id = Some(task_id.to_string());
             }
         }
+        self.flush_deferred_weave_relay_messages(sender_id);
         if status == "accepted" {
             return;
         }
@@ -5758,6 +5818,7 @@ impl ChatWidget {
         action_id: &str,
         group_id: &str,
         expects_reply: bool,
+        blocks_outbound: bool,
     ) {
         let state = self
             .weave_target_states
@@ -5770,6 +5831,7 @@ impl ChatWidget {
             WeavePendingAction {
                 group_id: group_id.to_string(),
                 expects_reply,
+                blocks_outbound,
             },
         );
     }
@@ -5803,6 +5865,169 @@ impl ChatWidget {
         }
     }
 
+    fn clear_pending_weave_relay_messages(&mut self) {
+        if !self.pending_weave_relay_messages.is_empty() {
+            self.pending_weave_relay_messages.clear();
+        }
+    }
+
+    fn has_blocking_weave_action(&self, agent_id: &str) -> bool {
+        self.weave_target_states.get(agent_id).is_some_and(|state| {
+            state
+                .pending_actions
+                .values()
+                .any(|pending| pending.blocks_outbound)
+        })
+    }
+
+    fn queue_deferred_weave_relay_message(&mut self, agent_id: &str, owner_id: &str, text: String) {
+        self.pending_weave_relay_messages
+            .entry(agent_id.to_string())
+            .or_default()
+            .push(WeaveDeferredRelayMessage {
+                owner_id: owner_id.to_string(),
+                text,
+            });
+    }
+
+    fn flush_deferred_weave_relay_messages(&mut self, agent_id: &str) {
+        if self.has_blocking_weave_action(agent_id) {
+            return;
+        }
+        let Some(deferred) = self.pending_weave_relay_messages.remove(agent_id) else {
+            return;
+        };
+        let Some(active_relay) = self.active_weave_relay.clone() else {
+            return;
+        };
+        if !active_relay.allows_id(agent_id) {
+            return;
+        }
+        let agent = {
+            let Some(agents) = self.weave_agents.as_ref() else {
+                return;
+            };
+            let Some(agent) = agents.iter().find(|agent| agent.id == agent_id).cloned() else {
+                return;
+            };
+            agent
+        };
+        let sender = {
+            let Some(connection) = self.weave_agent_connection.as_ref() else {
+                return;
+            };
+            connection.sender()
+        };
+        let app_event_tx = self.app_event_tx.clone();
+        let sender_name = self.weave_agent_name.clone();
+        let sender_is_owner = active_relay.owner_id == self.weave_agent_id;
+
+        let mut outbound_messages: Vec<(String, Vec<(String, bool)>)> = Vec::new();
+        let mut outgoing: HashMap<String, WeaveRelayGroupPayload> = HashMap::new();
+        let mut action_index = 0usize;
+        let mut next_action_index = || {
+            let current = action_index;
+            action_index += 1;
+            current
+        };
+
+        for message in deferred {
+            if message.owner_id != active_relay.owner_id {
+                continue;
+            }
+            let text = message.text.trim();
+            if text.is_empty() {
+                continue;
+            }
+            let action_id = new_weave_action_id();
+            let reply_to_action_id = self
+                .weave_target_states
+                .get(agent.id.as_str())
+                .and_then(|state| state.last_action_id.as_deref())
+                .map(ToString::to_string);
+            let kind = if reply_to_action_id.is_some() {
+                WeaveMessageKind::Reply
+            } else {
+                WeaveMessageKind::User
+            };
+            let group = outgoing.entry(agent.id.clone()).or_insert_with(|| {
+                let (context_id, task_id) = self.ensure_weave_target_state(agent.id.as_str());
+                WeaveRelayGroupPayload {
+                    group_id: new_weave_action_group_id(),
+                    actions: Vec::new(),
+                    metadata: WeaveMessageMetadata {
+                        conversation_id: context_id,
+                        conversation_owner: active_relay.owner_id.clone(),
+                        parent_message_id: None,
+                        task_id: Some(task_id),
+                    },
+                }
+            });
+            let action_index = next_action_index();
+            group.actions.push(Self::weave_action_message_payload(
+                agent.id.as_str(),
+                text,
+                action_id.as_str(),
+                action_index,
+                kind,
+                reply_to_action_id.as_deref(),
+            ));
+            self.register_pending_weave_action(
+                agent.id.as_str(),
+                action_id.as_str(),
+                group.group_id.as_str(),
+                true,
+                false,
+            );
+            outbound_messages.push((
+                text.to_string(),
+                vec![(agent.display_name(), active_relay.owner_id == agent.id)],
+            ));
+        }
+
+        if outgoing.is_empty() {
+            return;
+        }
+        self.app_event_tx.send(AppEvent::ScrollTranscriptToBottom);
+        let payloads = outgoing.into_values().collect::<Vec<_>>();
+        tokio::spawn(async move {
+            let mut all_ok = true;
+            for group in payloads {
+                let payload = Self::action_submit_payload(
+                    group.group_id.as_str(),
+                    group.actions,
+                    Some(&group.metadata),
+                );
+                if let Err(err) = sender.send_action_submit(payload).await {
+                    all_ok = false;
+                    app_event_tx.send(AppEvent::WeaveActionSubmitFailed {
+                        group_id: group.group_id.clone(),
+                    });
+                    app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                        history_cell::new_error_event(format!(
+                            "Failed to send Weave relay actions: {err}"
+                        )),
+                    )));
+                }
+            }
+            if all_ok {
+                for (message, successes) in outbound_messages {
+                    if successes.is_empty() {
+                        continue;
+                    }
+                    app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                        history_cell::new_weave_outbound(
+                            sender_name.clone(),
+                            successes,
+                            message,
+                            sender_is_owner,
+                        ),
+                    )));
+                }
+            }
+        });
+    }
+
     fn clear_pending_weave_actions_for_group(&mut self, group_id: &str) -> bool {
         let mut removed = false;
         for state in self.weave_target_states.values_mut() {
@@ -5821,6 +6046,28 @@ impl ChatWidget {
         self.pending_weave_new_session_result.is_some() || self.thread_id.is_none()
     }
 
+    fn should_remap_pending_weave_message(
+        &self,
+        context: &WeavePendingNewSessionContext,
+        message: &WeaveIncomingMessage,
+    ) -> bool {
+        if message.src != context.conversation_owner {
+            return false;
+        }
+        let is_group_match = message
+            .action_group_id
+            .as_deref()
+            .is_some_and(|group_id| group_id == context.group_id.as_str());
+        if is_group_match {
+            return matches!(
+                (context.action_index, message.action_index),
+                (Some(context_index), Some(message_index)) if message_index > context_index
+            );
+        }
+        !context.previous_conversation_id.is_empty()
+            && message.conversation_id == context.previous_conversation_id
+    }
+
     fn flush_pending_weave_action_messages(&mut self) {
         if self.pending_weave_action_messages.is_empty() {
             return;
@@ -5830,10 +6077,7 @@ impl ChatWidget {
         while let Some(mut message) = pending.pop_front() {
             message.defer_until_ready = false;
             if let Some(context) = pending_context.as_ref()
-                && message
-                    .action_group_id
-                    .as_deref()
-                    .is_some_and(|group_id| group_id == context.group_id.as_str())
+                && self.should_remap_pending_weave_message(context, &message)
             {
                 message.conversation_id = context.conversation_id.clone();
                 message.conversation_owner = context.conversation_owner.clone();
@@ -5856,6 +6100,26 @@ impl ChatWidget {
             action_id,
             action_index,
         } = context;
+        if sender_id == self.weave_agent_id {
+            let (_, label) = weave_control_action_parts(&tool);
+            self.add_to_history(history_cell::new_error_event(format!(
+                "Ignored Weave control from local agent: {label}."
+            )));
+            self.send_weave_action_result_for_context(
+                sender_id,
+                action_group_id,
+                action_id,
+                action_index,
+                WeaveActionResultContext {
+                    status: "rejected",
+                    detail: Some("Ignored self-targeted control."),
+                    new_context_id: None,
+                    new_task_id: None,
+                },
+            );
+            self.request_redraw();
+            return true;
+        }
         let is_task_running = self.bottom_pane.is_task_running();
         match tool {
             WeaveTool::NewSession => {
@@ -5898,6 +6162,8 @@ impl ChatWidget {
                     });
                     self.pending_weave_new_session_context = Some(WeavePendingNewSessionContext {
                         group_id: group_id.to_string(),
+                        previous_conversation_id: conversation_id.to_string(),
+                        action_index: Some(action_index),
                         conversation_id: new_weave_conversation_id(),
                         conversation_owner: sender_id.to_string(),
                         task_id: new_weave_task_id(),
@@ -6121,6 +6387,7 @@ impl ChatWidget {
         self.weave_inbound_task_ids.clear();
         self.weave_target_states.clear();
         self.pending_weave_action_messages.clear();
+        self.pending_weave_relay_messages.clear();
         self.pending_weave_new_session_result = None;
         self.pending_weave_new_session_context = None;
         self.pending_weave_new_session = false;
@@ -7629,6 +7896,8 @@ fn parse_weave_control_actions(
             .entry(agent.mention_text())
             .or_insert_with(|| agent.clone());
     }
+    let is_command_token =
+        |token: &str| matches!(token, "/new" | "/compact" | "/interrupt" | "/review");
     let mut actions = Vec::new();
     let mut kept_lines = Vec::new();
     let mut has_non_control_lines = false;
@@ -7638,102 +7907,123 @@ fn parse_weave_control_actions(
             kept_lines.push(line);
             continue;
         }
-        let mut targets = Vec::new();
-        let mut seen_ids = HashSet::new();
-        for token in &tokens {
-            let Some(mention) = token.strip_prefix('#') else {
-                continue;
-            };
-            if mention.is_empty() {
-                continue;
-            }
-            let Some(agent) = mention_lookup.get(mention) else {
-                continue;
-            };
-            if self_agent_id == Some(agent.id.as_str()) {
-                continue;
-            }
-            if seen_ids.insert(agent.id.clone()) {
-                targets.push(agent.clone());
-            }
-        }
-        let mut command = None;
-        let mut command_index = None;
-        for (idx, token) in tokens.iter().enumerate() {
-            match *token {
-                "/new" => {
-                    command = Some("new");
-                    command_index = Some(idx);
-                    break;
-                }
-                "/compact" => {
-                    command = Some("compact");
-                    command_index = Some(idx);
-                    break;
-                }
-                "/interrupt" => {
-                    command = Some("interrupt");
-                    command_index = Some(idx);
-                    break;
-                }
-                "/review" => {
-                    command = Some("review");
-                    command_index = Some(idx);
-                    break;
-                }
-                _ => {}
-            }
-        }
-        let Some(command) = command else {
-            kept_lines.push(line);
-            has_non_control_lines = true;
-            continue;
-        };
-        let Some(command_index) = command_index else {
-            kept_lines.push(line);
-            has_non_control_lines = true;
-            continue;
-        };
-        if targets.is_empty()
-            || tokens[..command_index]
-                .iter()
-                .any(|token| !token.starts_with('#'))
-        {
+        let command_count = tokens
+            .iter()
+            .filter(|token| is_command_token(token))
+            .count();
+        if command_count == 0 {
             kept_lines.push(line);
             has_non_control_lines = true;
             continue;
         }
-        let trailing = tokens.get(command_index + 1..).unwrap_or(&[]);
-        if command != "review" && !trailing.is_empty() {
-            kept_lines.push(line);
-            has_non_control_lines = true;
-            continue;
-        }
-        if command == "review" && trailing.iter().any(|token| token.starts_with('#')) {
-            kept_lines.push(line);
-            has_non_control_lines = true;
-            continue;
-        }
-        let tool = match command {
-            "new" => WeaveTool::NewSession,
-            "compact" => WeaveTool::Compact,
-            "interrupt" => WeaveTool::Interrupt,
-            "review" => {
-                let args = trailing.join(" ");
-                let instructions = {
-                    let trimmed = args.trim();
-                    (!trimmed.is_empty()).then_some(trimmed.to_string())
-                };
-                WeaveTool::Review { instructions }
-            }
-            _ => {
+        if tokens.contains(&"/review") {
+            if command_count != 1 {
                 kept_lines.push(line);
                 has_non_control_lines = true;
                 continue;
             }
-        };
-        actions.push(WeaveControlAction { targets, tool });
-        continue;
+            let review_index = tokens
+                .iter()
+                .position(|token| *token == "/review")
+                .unwrap_or(tokens.len());
+            let mut targets = Vec::new();
+            let mut seen_ids = HashSet::new();
+            let mut invalid = false;
+            for token in &tokens[..review_index] {
+                let Some(mention) = token.strip_prefix('#') else {
+                    invalid = true;
+                    break;
+                };
+                if mention.is_empty() {
+                    invalid = true;
+                    break;
+                }
+                let Some(agent) = mention_lookup.get(mention) else {
+                    continue;
+                };
+                if self_agent_id == Some(agent.id.as_str()) {
+                    continue;
+                }
+                if seen_ids.insert(agent.id.clone()) {
+                    targets.push(agent.clone());
+                }
+            }
+            if targets.is_empty() {
+                invalid = true;
+            }
+            let trailing = tokens.get(review_index + 1..).unwrap_or(&[]);
+            if trailing.iter().any(|token| token.starts_with('#')) {
+                invalid = true;
+            }
+            if invalid {
+                kept_lines.push(line);
+                has_non_control_lines = true;
+                continue;
+            }
+            let args = trailing.join(" ");
+            let instructions = {
+                let trimmed = args.trim();
+                (!trimmed.is_empty()).then_some(trimmed.to_string())
+            };
+            actions.push(WeaveControlAction {
+                targets,
+                tool: WeaveTool::Review { instructions },
+            });
+            continue;
+        }
+
+        let mut pending_targets = Vec::new();
+        let mut seen_ids = HashSet::new();
+        let mut line_actions = Vec::new();
+        let mut invalid = false;
+        let mut saw_command = false;
+        for token in tokens {
+            if let Some(mention) = token.strip_prefix('#') {
+                if mention.is_empty() {
+                    invalid = true;
+                    break;
+                }
+                let Some(agent) = mention_lookup.get(mention) else {
+                    continue;
+                };
+                if self_agent_id == Some(agent.id.as_str()) {
+                    continue;
+                }
+                if seen_ids.insert(agent.id.clone()) {
+                    pending_targets.push(agent.clone());
+                }
+                continue;
+            }
+            let tool = match token {
+                "/new" => Some(WeaveTool::NewSession),
+                "/compact" => Some(WeaveTool::Compact),
+                "/interrupt" => Some(WeaveTool::Interrupt),
+                "/review" => None,
+                _ => None,
+            };
+            if let Some(tool) = tool {
+                if pending_targets.is_empty() {
+                    invalid = true;
+                    break;
+                }
+                line_actions.push(WeaveControlAction {
+                    targets: pending_targets.clone(),
+                    tool,
+                });
+                pending_targets.clear();
+                seen_ids.clear();
+                saw_command = true;
+                continue;
+            }
+            invalid = true;
+            break;
+        }
+        if invalid || !saw_command || !pending_targets.is_empty() {
+            kept_lines.push(line);
+            has_non_control_lines = true;
+            continue;
+        }
+        actions.extend(line_actions);
     }
     if has_non_control_lines {
         return (Vec::new(), original_text);
