@@ -151,6 +151,7 @@ mod platform {
     use std::path::Path;
     use std::path::PathBuf;
     use std::sync::Arc;
+    use std::sync::RwLock;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
     use time::OffsetDateTime;
@@ -251,7 +252,7 @@ mod platform {
     pub struct WeaveAgentConnection {
         session_id: String,
         agent_id: String,
-        agent_name: String,
+        agent_name: Arc<RwLock<String>>,
         seq: Arc<AtomicU64>,
         outgoing_tx: mpsc::UnboundedSender<WeaveOutgoingRequest>,
         incoming_rx: Option<mpsc::UnboundedReceiver<WeaveIncomingMessage>>,
@@ -278,7 +279,13 @@ mod platform {
         }
 
         pub fn set_agent_name(&mut self, name: String) {
-            self.agent_name = name;
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                return;
+            }
+            if let Ok(mut guard) = self.agent_name.write() {
+                *guard = trimmed.to_string();
+            }
         }
 
         pub fn take_incoming_rx(
@@ -439,9 +446,10 @@ mod platform {
             .filter(|name| !name.is_empty())
             .map(ToString::to_string)
             .unwrap_or_else(|| agent_id.clone());
+        let agent_name = Arc::new(RwLock::new(agent_name));
         let session_id_for_task = session_id.clone();
         let agent_id_for_task = agent_id.clone();
-        let agent_name_for_task = agent_name.clone();
+        let agent_name_for_task = Arc::clone(&agent_name);
         let state = AgentConnectionState {
             session_id: session_id_for_task,
             agent_id: agent_id_for_task,
@@ -784,7 +792,7 @@ mod platform {
     struct AgentConnectionState {
         session_id: String,
         agent_id: String,
-        agent_name: String,
+        agent_name: Arc<RwLock<String>>,
         outgoing_rx: mpsc::UnboundedReceiver<WeaveOutgoingRequest>,
         incoming_tx: mpsc::UnboundedSender<WeaveIncomingMessage>,
     }
@@ -961,13 +969,23 @@ mod platform {
                                 let _ = response_tx.send(Ok(response));
                                 continue;
                             }
-                            if let Some(ack) =
-                                build_message_ack_request(&response, &agent_id, &agent_name, &session_id)
-                                && let Err(err) = send_envelope(&mut writer, &ack).await {
+                            let current_agent_name = agent_name
+                                .read()
+                                .map(|guard| guard.clone())
+                                .unwrap_or_else(|_| agent_id.clone());
+                            if let Some(ack) = build_message_ack_request(
+                                &response,
+                                &agent_id,
+                                current_agent_name.as_str(),
+                                &session_id,
+                            ) && let Err(err) = send_envelope(&mut writer, &ack).await {
                                     warn!(error = %err, "Failed to acknowledge Weave message");
                                 }
-                            for message in build_incoming_messages(&response, &agent_id, &agent_name)
-                            {
+                            for message in build_incoming_messages(
+                                &response,
+                                &agent_id,
+                                current_agent_name.as_str(),
+                            ) {
                                 let _ = incoming_tx.send(message);
                             }
                         }
