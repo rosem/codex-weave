@@ -5977,6 +5977,9 @@ impl ChatWidget {
             }
             self.on_weave_message_received(message);
         }
+        if pending_context.is_some() && self.pending_weave_action_messages.is_empty() {
+            self.pending_weave_new_session_context = None;
+        }
     }
 
     fn apply_weave_tool(&mut self, tool: WeaveTool, context: WeaveToolContext<'_>) -> bool {
@@ -7726,7 +7729,9 @@ fn extract_weave_relay_control_tokens(text: &str) -> (Vec<WeaveTool>, String) {
         let trimmed = line.trim();
         match trimmed {
             "/new" => tools.push(WeaveTool::NewSession),
+            "/compact" => tools.push(WeaveTool::Compact),
             "/interrupt" => tools.push(WeaveTool::Interrupt),
+            "/review" => tools.push(WeaveTool::Review { instructions: None }),
             _ => lines.push(line.to_string()),
         }
     }
