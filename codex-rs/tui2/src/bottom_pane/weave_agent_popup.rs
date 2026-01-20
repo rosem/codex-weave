@@ -9,6 +9,7 @@ use super::selection_popup_common::render_rows_single_line;
 use crate::render::Insets;
 use crate::render::RectExt;
 use crate::text_formatting::truncate_text;
+use crate::weave_client;
 use crate::weave_client::WeaveAgent;
 use codex_common::fuzzy_match::fuzzy_match;
 
@@ -160,11 +161,15 @@ impl WeaveAgentPopup {
         let matches = self.filtered();
         let rename = self.rename_candidate();
         let has_primary = !matches.is_empty() || rename.is_some();
+        let mention_tokens = weave_client::weave_mention_tokens(&self.agents);
         let mut actions = Vec::with_capacity(matches.len() + 2);
         for (idx, _, _) in matches {
-            actions.push(WeaveAgentPopupAction::Agent {
-                mention: self.agents[idx].mention_text(),
-            });
+            let agent = &self.agents[idx];
+            let mention = mention_tokens
+                .get(&agent.id)
+                .cloned()
+                .unwrap_or_else(|| agent.mention_text());
+            actions.push(WeaveAgentPopupAction::Agent { mention });
         }
         if let Some(name) = rename {
             actions.push(WeaveAgentPopupAction::Rename { name });

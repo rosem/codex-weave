@@ -234,7 +234,8 @@ mod platform {
     #[derive(Debug, Deserialize)]
     struct SessionListEntry {
         id: String,
-        name: String,
+        #[serde(default)]
+        name: Option<String>,
     }
 
     #[derive(Debug, Deserialize)]
@@ -325,11 +326,13 @@ mod platform {
             .sessions
             .into_iter()
             .map(|entry| {
-                let trimmed = entry.name.trim();
-                WeaveSession {
-                    id: entry.id,
-                    name: (!trimmed.is_empty()).then_some(trimmed.to_string()),
-                }
+                let name = entry
+                    .name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(ToString::to_string);
+                WeaveSession { id: entry.id, name }
             })
             .collect();
         Ok(sessions)
