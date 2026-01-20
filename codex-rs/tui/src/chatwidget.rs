@@ -4206,7 +4206,10 @@ impl ChatWidget {
                 self.on_entered_review_mode(review_request)
             }
             EventMsg::ExitedReviewMode(review) => self.on_exited_review_mode(review),
-            EventMsg::ContextCompacted(_) => self.on_agent_message("Context compacted".to_owned()),
+            EventMsg::ContextCompacted(_) => {
+                self.active_weave_control_context = None;
+                self.on_agent_message("Context compacted".to_owned())
+            }
             EventMsg::ThreadRolledBack(_) => {}
             EventMsg::RawResponseItem(_)
             | EventMsg::ItemStarted(_)
@@ -4259,6 +4262,7 @@ impl ChatWidget {
 
         self.is_review_mode = false;
         self.restore_pre_review_token_info();
+        self.active_weave_control_context = None;
         // Append a finishing banner at the end of this turn.
         self.add_to_history(history_cell::new_review_status_line(
             "<< Code review finished >>".to_string(),
@@ -7935,7 +7939,11 @@ fn parse_weave_control_actions(
         return (Vec::new(), original_text);
     }
     let cleaned_text = kept_lines.join("\n");
-    (actions, cleaned_text)
+    if cleaned_text.trim().is_empty() {
+        (actions, String::new())
+    } else {
+        (actions, cleaned_text)
+    }
 }
 
 fn find_weave_mentions(
