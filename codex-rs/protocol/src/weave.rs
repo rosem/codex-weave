@@ -22,6 +22,7 @@ pub enum WeaveRelayAction {
     Message {
         dst: String,
         text: String,
+        reply_policy: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         plan: Option<WeaveRelayPlan>,
     },

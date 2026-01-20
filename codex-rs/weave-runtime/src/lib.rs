@@ -240,3 +240,150 @@ impl WeaveRuntime {
         lead_ids
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use pretty_assertions::assert_eq;
+
+    fn agent(id: &str, lead: bool) -> WeaveAgent {
+        WeaveAgent {
+            id: id.to_string(),
+            name: None,
+            lead,
+            status: None,
+        }
+    }
+
+    fn message(
+        id: &str,
+        session_id: &str,
+        src: &str,
+        dst: Option<&str>,
+        kind: WeaveMessageKind,
+        text: &str,
+    ) -> WeaveMessage {
+        WeaveMessage {
+            id: id.to_string(),
+            session_id: session_id.to_string(),
+            src: src.to_string(),
+            dst: dst.map(str::to_string),
+            kind,
+            text: text.to_string(),
+            reply_to: None,
+        }
+    }
+
+    fn action_for(dst: &str, message: &WeaveMessage) -> WeaveRuntimeAction {
+        WeaveRuntimeAction::SendMessage(WeaveOutboundMessage {
+            session_id: message.session_id.clone(),
+            src: message.src.clone(),
+            dst: Some(dst.to_string()),
+            kind: message.kind,
+            text: message.text.clone(),
+            reply_to: Some(message.id.clone()),
+        })
+    }
+
+    #[test]
+    fn drops_message_before_agent_list() {
+        let mut runtime = WeaveRuntime::default();
+        let message = message(
+            "msg-1",
+            "session-1",
+            "user-1",
+            None,
+            WeaveMessageKind::User,
+            "hello",
+        );
+        let actions = runtime.handle_event(WeaveRuntimeInput::MessageReceived(message));
+        assert_eq!(actions, Vec::new());
+    }
+
+    #[test]
+    fn suppresses_reply_by_default() {
+        let mut runtime = WeaveRuntime::default();
+        runtime.set_agents("session-1".to_string(), vec![agent("lead-a", true)]);
+        let message = message(
+            "msg-2",
+            "session-1",
+            "user-1",
+            None,
+            WeaveMessageKind::Reply,
+            "ack",
+        );
+        let actions = runtime.handle_event(WeaveRuntimeInput::MessageReceived(message));
+        assert_eq!(actions, Vec::new());
+    }
+
+    #[test]
+    fn relays_reply_when_loop_guard_disabled() {
+        let config = WeaveRuntimeConfig {
+            lead_policy: LeadPolicy::Single,
+            loop_guard: LoopGuardConfig {
+                suppress_reply_relay: false,
+            },
+        };
+        let mut runtime = WeaveRuntime::new(config);
+        runtime.set_agents("session-1".to_string(), vec![agent("lead-a", true)]);
+        let message = message(
+            "msg-3",
+            "session-1",
+            "user-1",
+            None,
+            WeaveMessageKind::Reply,
+            "ack",
+        );
+        let actions = runtime.handle_event(WeaveRuntimeInput::MessageReceived(message.clone()));
+        assert_eq!(actions, vec![action_for("lead-a", &message)]);
+    }
+
+    #[test]
+    fn relays_to_all_leads_with_multiple_policy() {
+        let config = WeaveRuntimeConfig {
+            lead_policy: LeadPolicy::Multiple,
+            loop_guard: LoopGuardConfig::default(),
+        };
+        let mut runtime = WeaveRuntime::new(config);
+        runtime.set_agents(
+            "session-1".to_string(),
+            vec![agent("lead-a", true), agent("lead-b", true)],
+        );
+        let message = message(
+            "msg-4",
+            "session-1",
+            "user-1",
+            None,
+            WeaveMessageKind::User,
+            "ping",
+        );
+        let actions = runtime.handle_event(WeaveRuntimeInput::MessageReceived(message.clone()));
+        assert_eq!(
+            actions,
+            vec![
+                action_for("lead-a", &message),
+                action_for("lead-b", &message)
+            ]
+        );
+    }
+
+    #[test]
+    fn retries_are_not_deduplicated() {
+        let mut runtime = WeaveRuntime::default();
+        runtime.set_agents("session-1".to_string(), vec![agent("lead-a", true)]);
+        let message = message(
+            "msg-5",
+            "session-1",
+            "user-1",
+            None,
+            WeaveMessageKind::User,
+            "ping",
+        );
+        let expected = vec![action_for("lead-a", &message)];
+        let first = runtime.handle_event(WeaveRuntimeInput::MessageReceived(message.clone()));
+        let second = runtime.handle_event(WeaveRuntimeInput::MessageReceived(message));
+        assert_eq!(first, expected);
+        assert_eq!(second, expected);
+    }
+}

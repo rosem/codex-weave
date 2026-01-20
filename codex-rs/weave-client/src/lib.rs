@@ -681,6 +681,7 @@ mod platform {
         action_index: usize,
         reply_to_action_id: Option<&str>,
         kind: Option<super::WeaveMessageKind>,
+        reply_policy: Option<&str>,
     ) -> Value {
         let mut payload = serde_json::Map::new();
         payload.insert("type".to_string(), json!("message"));
@@ -693,6 +694,12 @@ mod platform {
         }
         if let Some(kind) = kind {
             payload.insert("kind".to_string(), json!(kind_label(kind)));
+        }
+        if let Some(reply_policy) = reply_policy
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            payload.insert("reply_policy".to_string(), json!(reply_policy));
         }
         payload.insert("text".to_string(), json!(text));
         payload.insert("action_id".to_string(), json!(action_id));
@@ -834,6 +841,7 @@ mod platform {
                 0,
                 reply_to_action_id,
                 Some(super::WeaveMessageKind::Reply),
+                Some("none"),
             )];
             let payload = action_submit_payload(&group_id, actions, metadata);
             self.send_action_submit(payload).await
@@ -1632,6 +1640,224 @@ mod platform {
             defer_until_ready: false,
             has_conversation_metadata,
         })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::super::WeaveIncomingMessage;
+        use super::super::WeaveMessageKind;
+        use super::super::WeaveTool;
+        use super::WEAVE_VERSION;
+        use super::WeaveAck;
+        use super::WeaveEnvelope;
+        use super::build_incoming_messages;
+        use super::build_message_ack_request;
+        use pretty_assertions::assert_eq;
+        use serde_json::json;
+
+        fn base_envelope() -> WeaveEnvelope {
+            WeaveEnvelope {
+                v: WEAVE_VERSION,
+                r#type: "message.send".to_string(),
+                id: "msg-1".to_string(),
+                ts: "2024-01-01T00:00:00Z".to_string(),
+                src: "src-1".to_string(),
+                dst: None,
+                topic: None,
+                session: Some("session-1".to_string()),
+                seq: None,
+                idempotency_key: None,
+                corr: None,
+                payload: None,
+                payload_ref: None,
+                content_type: None,
+                size: None,
+                meta: None,
+                status: None,
+                error: None,
+                ack: None,
+            }
+        }
+
+        #[test]
+        fn message_ack_requires_auto_inbox() {
+            let mut envelope = base_envelope();
+            envelope.src = "agent-2".to_string();
+            envelope.topic = Some("agent.agent-1.inbox".to_string());
+            envelope.ack = Some(WeaveAck {
+                mode: Some("auto".to_string()),
+                timeout_ms: None,
+            });
+
+            let ack = build_message_ack_request(&envelope, "agent-1", "agent-name", "session-1")
+                .expect("expected ack request");
+            assert_eq!(ack.r#type, "message.ack");
+            assert_eq!(ack.src, "agent-1");
+            assert_eq!(ack.session.as_deref(), Some("session-1"));
+            assert_eq!(ack.corr.as_deref(), Some("msg-1"));
+
+            envelope.ack = Some(WeaveAck {
+                mode: Some("manual".to_string()),
+                timeout_ms: None,
+            });
+            assert!(
+                build_message_ack_request(&envelope, "agent-1", "agent-name", "session-1")
+                    .is_none()
+            );
+        }
+
+        #[test]
+        fn action_submit_defers_messages_after_new_session() {
+            let mut envelope = base_envelope();
+            envelope.r#type = "action.submit".to_string();
+            envelope.src = "router".to_string();
+            envelope.meta = Some(json!({
+                "weave": { "origin_src_name": "coordinator" }
+            }));
+            envelope.payload = Some(json!({
+                "group_id": "group-1",
+                "task_id": "task-1",
+                "context": {
+                    "context_id": "ctx-1",
+                    "owner_id": "owner-1",
+                    "parent_message_id": "parent-1"
+                },
+                "actions": [
+                    {
+                        "type": "message",
+                        "dst": "agent-1",
+                        "text": "before",
+                        "action_id": "action-1",
+                        "action_index": 0
+                    },
+                    {
+                        "type": "control",
+                        "dst": "agent-1",
+                        "command": "new",
+                        "action_id": "action-2",
+                        "action_index": 1
+                    },
+                    {
+                        "type": "message",
+                        "dst": "agent-1",
+                        "text": "after",
+                        "action_id": "action-3",
+                        "action_index": 2
+                    }
+                ]
+            }));
+
+            let messages = build_incoming_messages(&envelope, "agent-1", "agent-name");
+            let expected = vec![
+                WeaveIncomingMessage {
+                    session_id: "session-1".to_string(),
+                    message_id: "msg-1".to_string(),
+                    src: "router".to_string(),
+                    src_name: Some("coordinator".to_string()),
+                    meta: envelope.meta.clone(),
+                    text: "before".to_string(),
+                    kind: WeaveMessageKind::User,
+                    conversation_id: "ctx-1".to_string(),
+                    conversation_owner: "owner-1".to_string(),
+                    parent_message_id: Some("parent-1".to_string()),
+                    task_id: Some("task-1".to_string()),
+                    tool: None,
+                    action_group_id: Some("group-1".to_string()),
+                    action_id: Some("action-1".to_string()),
+                    action_index: Some(0),
+                    reply_to_action_id: None,
+                    action_result: None,
+                    task_update: None,
+                    task_done: None,
+                    defer_until_ready: false,
+                    has_conversation_metadata: true,
+                },
+                WeaveIncomingMessage {
+                    session_id: "session-1".to_string(),
+                    message_id: "msg-1".to_string(),
+                    src: "router".to_string(),
+                    src_name: Some("coordinator".to_string()),
+                    meta: envelope.meta.clone(),
+                    text: String::new(),
+                    kind: WeaveMessageKind::Control,
+                    conversation_id: "ctx-1".to_string(),
+                    conversation_owner: "owner-1".to_string(),
+                    parent_message_id: Some("parent-1".to_string()),
+                    task_id: Some("task-1".to_string()),
+                    tool: Some(WeaveTool::NewSession),
+                    action_group_id: Some("group-1".to_string()),
+                    action_id: Some("action-2".to_string()),
+                    action_index: Some(1),
+                    reply_to_action_id: None,
+                    action_result: None,
+                    task_update: None,
+                    task_done: None,
+                    defer_until_ready: false,
+                    has_conversation_metadata: true,
+                },
+                WeaveIncomingMessage {
+                    session_id: "session-1".to_string(),
+                    message_id: "msg-1".to_string(),
+                    src: "router".to_string(),
+                    src_name: Some("coordinator".to_string()),
+                    meta: envelope.meta,
+                    text: "after".to_string(),
+                    kind: WeaveMessageKind::User,
+                    conversation_id: "ctx-1".to_string(),
+                    conversation_owner: "owner-1".to_string(),
+                    parent_message_id: Some("parent-1".to_string()),
+                    task_id: Some("task-1".to_string()),
+                    tool: None,
+                    action_group_id: Some("group-1".to_string()),
+                    action_id: Some("action-3".to_string()),
+                    action_index: Some(2),
+                    reply_to_action_id: None,
+                    action_result: None,
+                    task_update: None,
+                    task_done: None,
+                    defer_until_ready: true,
+                    has_conversation_metadata: true,
+                },
+            ];
+
+            assert_eq!(messages, expected);
+        }
+
+        #[test]
+        fn message_payload_ref_does_not_override_empty_text() {
+            let mut envelope = base_envelope();
+            envelope.src = "agent-2".to_string();
+            envelope.dst = Some("agent-1".to_string());
+            envelope.payload_ref = Some("blob-1".to_string());
+            envelope.payload = Some(json!({ "text": "" }));
+
+            let messages = build_incoming_messages(&envelope, "agent-1", "agent-name");
+            let expected = vec![WeaveIncomingMessage {
+                session_id: "session-1".to_string(),
+                message_id: "msg-1".to_string(),
+                src: "agent-2".to_string(),
+                src_name: None,
+                meta: None,
+                text: String::new(),
+                kind: WeaveMessageKind::User,
+                conversation_id: "msg-1".to_string(),
+                conversation_owner: "agent-2".to_string(),
+                parent_message_id: None,
+                task_id: None,
+                tool: None,
+                action_group_id: None,
+                action_id: None,
+                action_index: None,
+                reply_to_action_id: None,
+                action_result: None,
+                task_update: None,
+                task_done: None,
+                defer_until_ready: false,
+                has_conversation_metadata: false,
+            }];
+
+            assert_eq!(messages, expected);
+        }
     }
 }
 
