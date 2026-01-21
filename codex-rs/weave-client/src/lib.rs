@@ -1,4 +1,6 @@
+use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WeaveSession {
@@ -69,6 +71,7 @@ pub struct WeaveIncomingMessage {
     pub action_result: Option<WeaveActionResult>,
     pub task_update: Option<WeaveTaskUpdate>,
     pub task_done: Option<WeaveTaskDone>,
+    pub relay_done: Option<WeaveRelayDone>,
     pub defer_until_ready: bool,
     pub has_conversation_metadata: bool,
 }
@@ -94,6 +97,64 @@ pub struct WeaveTaskUpdate {
 pub struct WeaveTaskDone {
     pub task_id: String,
     pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeaveRelayDone {
+    pub relay_id: String,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct WeaveRelayAccepted {
+    pub relay_id: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub retry_after_ms: Option<u64>,
+    #[serde(default)]
+    pub action_count: usize,
+    #[serde(default)]
+    pub target_count: usize,
+    #[serde(default)]
+    pub failures: Vec<WeaveRelayAcceptedFailure>,
+    #[serde(default)]
+    pub targets: HashMap<String, WeaveRelayAcceptedTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct WeaveRelayAcceptedFailure {
+    pub dst: String,
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct WeaveRelayAcceptedTarget {
+    #[serde(default)]
+    pub context_id: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub group_id: Option<String>,
+    #[serde(default)]
+    pub actions: Vec<WeaveRelayAcceptedAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct WeaveRelayAcceptedAction {
+    #[serde(rename = "action_id")]
+    pub action_id: String,
+    #[serde(rename = "action_index")]
+    pub action_index: usize,
+    #[serde(rename = "type")]
+    pub action_type: String,
+    #[serde(default)]
+    pub reply_policy: Option<String>,
+    #[serde(default)]
+    pub command: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,6 +202,7 @@ mod platform {
     use super::WeaveActionResult;
     use super::WeaveAgent;
     use super::WeaveIncomingMessage;
+    use super::WeaveRelayAccepted;
     use super::WeaveSession;
     use serde::Deserialize;
     use serde::Serialize;
@@ -425,20 +487,8 @@ mod platform {
         let stream = UnixStream::connect(&socket_path)
             .await
             .map_err(|err| format!("Failed to connect to Weave coordinator: {err}"))?;
-        let (read_half, mut write_half) = tokio::io::split(stream);
-        let mut reader = BufReader::new(read_half);
-        let payload = agent_add_payload(&agent_id, name.as_deref());
-        let request = new_envelope_with_src(
-            "agent.add",
-            agent_id.clone(),
-            Some(session_id.clone()),
-            Some(payload),
-        );
-        send_envelope(&mut write_half, &request).await?;
-        let response = read_response(&mut reader, request.id.as_str()).await?;
-        if let Some(message) = response_error(&response) {
-            return Err(message);
-        }
+        let (read_half, write_half) = tokio::io::split(stream);
+        let reader = BufReader::new(read_half);
         let (incoming_tx, incoming_rx) = mpsc::unbounded_channel();
         let (outgoing_tx, outgoing_rx) = mpsc::unbounded_channel();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -463,6 +513,27 @@ mod platform {
         let _task = tokio::spawn(async move {
             hold_agent_connection(reader, write_half, shutdown_rx, state).await;
         });
+        let payload = agent_add_payload(&agent_id, name.as_deref());
+        let request = new_envelope_with_src(
+            "agent.add",
+            agent_id.clone(),
+            Some(session_id.clone()),
+            Some(payload),
+        );
+        let (response_tx, response_rx) = oneshot::channel();
+        outgoing_tx
+            .send(WeaveOutgoingRequest {
+                envelope: request,
+                response_tx,
+            })
+            .map_err(|_| "Weave agent connection closed".to_string())?;
+        let response = response_rx
+            .await
+            .map_err(|_| "Weave agent connection closed".to_string())??;
+        if let Some(message) = response_error(&response) {
+            let _ = shutdown_tx.send(());
+            return Err(message);
+        }
         Ok(WeaveAgentConnection {
             session_id,
             agent_id,
@@ -890,6 +961,28 @@ mod platform {
             Ok(())
         }
 
+        pub async fn send_relay_submit(
+            &self,
+            payload: Value,
+        ) -> Result<WeaveRelayAccepted, String> {
+            let mut request = new_envelope_with_src(
+                "relay.submit",
+                self.agent_id.clone(),
+                Some(self.session_id.clone()),
+                Some(payload),
+            );
+            request.seq = Some(self.next_seq());
+            let response = self.send_request(request).await?;
+            if let Some(message) = response_error(&response) {
+                return Err(message);
+            }
+            let payload = response
+                .payload
+                .ok_or_else(|| "relay.accepted payload missing".to_string())?;
+            serde_json::from_value(payload)
+                .map_err(|err| format!("Failed to parse relay.accepted payload: {err}"))
+        }
+
         pub async fn send_action_result(
             &self,
             dst: String,
@@ -1034,7 +1127,7 @@ mod platform {
         if envelope.r#type != "message.send" {
             return false;
         }
-        if envelope.src == agent_id || envelope.src == agent_name {
+        if envelope.src == agent_id {
             return false;
         }
         ack_requests_auto(envelope.ack.as_ref())
@@ -1050,7 +1143,7 @@ mod platform {
         agent_id: &str,
         agent_name: &str,
     ) -> Vec<WeaveIncomingMessage> {
-        if envelope.src == agent_id || envelope.src == agent_name {
+        if envelope.src == agent_id {
             return Vec::new();
         }
         let session_id = match envelope.session.as_ref() {
@@ -1085,6 +1178,10 @@ mod platform {
                 .and_then(|payload| build_task_done_message(payload, &ctx))
                 .into_iter()
                 .collect(),
+            "relay.done" => payload
+                .and_then(|payload| build_relay_done_message(payload, &ctx))
+                .into_iter()
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -1097,7 +1194,7 @@ mod platform {
         match envelope.dst.as_deref() {
             Some(dst) => dst == agent_id || dst == agent_name,
             None => match envelope.topic.as_deref() {
-                None => true,
+                None => false,
                 Some(topic) => agent_inbox_target(topic)
                     .is_some_and(|target| target == agent_id || target == agent_name),
             },
@@ -1280,6 +1377,7 @@ mod platform {
             action_result: None,
             task_update: None,
             task_done: None,
+            relay_done: None,
             defer_until_ready: false,
             has_conversation_metadata,
         })
@@ -1411,6 +1509,7 @@ mod platform {
                         action_result: None,
                         task_update: None,
                         task_done: None,
+                        relay_done: None,
                         defer_until_ready: defer_messages,
                         has_conversation_metadata,
                     };
@@ -1469,6 +1568,7 @@ mod platform {
                         action_result: None,
                         task_update: None,
                         task_done: None,
+                        relay_done: None,
                         defer_until_ready: false,
                         has_conversation_metadata,
                     };
@@ -1541,6 +1641,7 @@ mod platform {
             action_result: Some(action_result),
             task_update: None,
             task_done: None,
+            relay_done: None,
             defer_until_ready: false,
             has_conversation_metadata: false,
         })
@@ -1588,6 +1689,7 @@ mod platform {
             action_result: None,
             task_update: Some(task_update),
             task_done: None,
+            relay_done: None,
             defer_until_ready: false,
             has_conversation_metadata,
         })
@@ -1640,8 +1742,54 @@ mod platform {
             action_result: None,
             task_update: None,
             task_done: Some(task_done),
+            relay_done: None,
             defer_until_ready: false,
             has_conversation_metadata,
+        })
+    }
+
+    fn build_relay_done_message(
+        payload: &Value,
+        ctx: &IncomingMessageContext,
+    ) -> Option<WeaveIncomingMessage> {
+        let map = payload.as_object()?;
+        let relay_id = map.get("relay_id")?.as_str()?.trim();
+        if relay_id.is_empty() {
+            return None;
+        }
+        let summary = map
+            .get("summary")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let relay_done = super::WeaveRelayDone {
+            relay_id: relay_id.to_string(),
+            summary,
+        };
+        Some(WeaveIncomingMessage {
+            session_id: ctx.session_id.clone(),
+            message_id: ctx.message_id.clone(),
+            src: ctx.src.clone(),
+            src_name: ctx.src_name.clone(),
+            meta: ctx.meta.clone(),
+            text: String::new(),
+            kind: super::WeaveMessageKind::Control,
+            conversation_id: ctx.message_id.clone(),
+            conversation_owner: ctx.src.clone(),
+            parent_message_id: None,
+            task_id: None,
+            tool: None,
+            action_group_id: None,
+            action_id: None,
+            action_index: None,
+            reply_to_action_id: None,
+            action_result: None,
+            task_update: None,
+            task_done: None,
+            relay_done: Some(relay_done),
+            defer_until_ready: false,
+            has_conversation_metadata: false,
         })
     }
 
@@ -1772,6 +1920,7 @@ mod platform {
                     action_result: None,
                     task_update: None,
                     task_done: None,
+                    relay_done: None,
                     defer_until_ready: false,
                     has_conversation_metadata: true,
                 },
@@ -1795,6 +1944,7 @@ mod platform {
                     action_result: None,
                     task_update: None,
                     task_done: None,
+                    relay_done: None,
                     defer_until_ready: false,
                     has_conversation_metadata: true,
                 },
@@ -1818,6 +1968,7 @@ mod platform {
                     action_result: None,
                     task_update: None,
                     task_done: None,
+                    relay_done: None,
                     defer_until_ready: true,
                     has_conversation_metadata: true,
                 },
@@ -1855,6 +2006,7 @@ mod platform {
                 action_result: None,
                 task_update: None,
                 task_done: None,
+                relay_done: None,
                 defer_until_ready: false,
                 has_conversation_metadata: false,
             }];
@@ -1916,6 +2068,13 @@ mod platform {
         }
 
         pub async fn send_action_submit(&self, _payload: Value) -> Result<(), String> {
+            Err("Weave sessions are only supported on Unix platforms.".to_string())
+        }
+
+        pub async fn send_relay_submit(
+            &self,
+            _payload: Value,
+        ) -> Result<super::WeaveRelayAccepted, String> {
             Err("Weave sessions are only supported on Unix platforms.".to_string())
         }
 

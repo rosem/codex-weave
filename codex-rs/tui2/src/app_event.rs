@@ -21,6 +21,7 @@ use crate::history_cell::HistoryCell;
 use crate::weave_client::WeaveAgent;
 use crate::weave_client::WeaveAgentConnection;
 use crate::weave_client::WeaveIncomingMessage;
+use crate::weave_client::WeaveRelayAccepted;
 use crate::weave_client::WeaveSession;
 
 use codex_core::protocol::AskForApproval;
@@ -148,9 +149,15 @@ pub(crate) enum AppEvent {
     WeaveMessageReceived {
         message: WeaveIncomingMessage,
     },
-    /// Clear pending Weave actions after a submit failure.
-    WeaveActionSubmitFailed {
-        group_id: String,
+    /// Relay.submit was accepted; apply updates and log outbound relay actions.
+    WeaveRelayAccepted {
+        relay_id: String,
+        accepted: WeaveRelayAccepted,
+    },
+    /// Relay.submit failed to send or was rejected.
+    WeaveRelaySubmitFailed {
+        relay_id: String,
+        message: String,
     },
 
     /// Scroll the transcript to the most recent line.

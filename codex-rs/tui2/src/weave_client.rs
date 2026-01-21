@@ -6,6 +6,8 @@ pub(crate) use codex_weave_client::WeaveAgentConnection;
 pub(crate) use codex_weave_client::WeaveIncomingMessage;
 pub(crate) use codex_weave_client::WeaveMessageKind;
 pub(crate) use codex_weave_client::WeaveMessageMetadata;
+pub(crate) use codex_weave_client::WeaveRelayAccepted;
+pub(crate) use codex_weave_client::WeaveRelayDone;
 pub(crate) use codex_weave_client::WeaveSession;
 pub(crate) use codex_weave_client::WeaveTaskDone;
 pub(crate) use codex_weave_client::WeaveTaskUpdate;

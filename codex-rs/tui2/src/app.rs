@@ -1725,8 +1725,13 @@ impl App {
             AppEvent::WeaveMessageReceived { message } => {
                 self.chat_widget.on_weave_message_received(message);
             }
-            AppEvent::WeaveActionSubmitFailed { group_id } => {
-                self.chat_widget.on_weave_action_submit_failed(&group_id);
+            AppEvent::WeaveRelayAccepted { relay_id, accepted } => {
+                self.chat_widget
+                    .on_weave_relay_accepted(&relay_id, accepted);
+            }
+            AppEvent::WeaveRelaySubmitFailed { relay_id, message } => {
+                self.chat_widget
+                    .on_weave_relay_submit_failed(&relay_id, &message);
             }
             AppEvent::ScrollTranscriptToBottom => {
                 self.transcript_scroll = TranscriptScroll::ToBottom;

@@ -3683,7 +3683,8 @@ async fn weave_relay_rejects_invalid_reply_policy() {
         name: None,
     }];
     chat.weave_agents = Some(agents.clone());
-    let targets = WeaveRelayTargets::new(chat.weave_agent_id.clone(), &agents);
+    let targets =
+        WeaveRelayTargets::new(chat.weave_agent_id.clone(), new_weave_relay_id(), &agents);
     let actions = vec![WeaveRelayAction::Message {
         dst: "agent-a".to_string(),
         text: "Tell a joke".to_string(),
