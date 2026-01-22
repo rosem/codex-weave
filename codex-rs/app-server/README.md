@@ -79,6 +79,7 @@ Example (from OpenAI's official VSCode extension):
 - `thread/fork` — fork an existing thread into a new thread id by copying the stored history; emits `thread/started` and auto-subscribes you to turn/item events for the new thread.
 - `thread/list` — page through stored rollouts; supports cursor-based pagination and optional `modelProviders` filtering.
 - `thread/loaded/list` — list the thread ids currently loaded in memory.
+- `thread/read` — read a stored thread by id without resuming it; optionally include turns via `includeTurns`.
 - `thread/archive` — move a thread’s rollout file into the archived directory; returns `{}` on success.
 - `thread/rollback` — drop the last N turns from the agent’s in-memory context and persist a rollback marker in the rollout so future resumes see the pruned history; returns the updated `thread` (with `turns` populated) on success.
 - `turn/start` — add user input to a thread and begin Codex generation; responds with the initial `turn` object and streams `turn/started`, `item/*`, and `turn/completed` notifications.
@@ -147,6 +148,7 @@ To branch from a stored session, call `thread/fork` with the `thread.id`. This c
 - `limit` — server defaults to a reasonable page size if unset.
 - `sortKey` — `created_at` (default) or `updated_at`.
 - `modelProviders` — restrict results to specific providers; unset, null, or an empty array will include all providers.
+- `archived` — when `true`, list archived threads only. When `false` or `null`, list non-archived threads (default).
 
 Example:
 
@@ -178,6 +180,20 @@ When `nextCursor` is `null`, you’ve reached the final page.
 } }
 ```
 
+### Example: Read a thread
+
+Use `thread/read` to fetch a stored thread by id without resuming it. Pass `includeTurns` when you want the rollout history loaded into `thread.turns`.
+
+```json
+{ "method": "thread/read", "id": 22, "params": { "threadId": "thr_123" } }
+{ "id": 22, "result": { "thread": { "id": "thr_123", "turns": [] } } }
+```
+
+```json
+{ "method": "thread/read", "id": 23, "params": { "threadId": "thr_123", "includeTurns": true } }
+{ "id": 23, "result": { "thread": { "id": "thr_123", "turns": [ ... ] } } }
+```
+
 ### Example: Archive a thread
 
 Use `thread/archive` to move the persisted rollout (stored as a JSONL file on disk) into the archived sessions directory.
@@ -187,7 +203,7 @@ Use `thread/archive` to move the persisted rollout (stored as a JSONL file on di
 { "id": 21, "result": {} }
 ```
 
-An archived thread will not appear in future calls to `thread/list`.
+An archived thread will not appear in `thread/list` unless `archived` is set to `true`.
 
 ### Example: Start a turn (send user input)
 
@@ -445,7 +461,7 @@ Certain actions (shell commands or modifying files) may require explicit user ap
 Order of messages:
 
 1. `item/started` — shows the pending `commandExecution` item with `command`, `cwd`, and other fields so you can render the proposed action.
-2. `item/commandExecution/requestApproval` (request) — carries the same `itemId`, `threadId`, `turnId`, optionally `reason` or `risk`, plus `parsedCmd` for friendly display.
+2. `item/commandExecution/requestApproval` (request) — carries the same `itemId`, `threadId`, `turnId`, optionally `reason`, plus `command`, `cwd`, and `commandActions` for friendly display.
 3. Client response — `{ "decision": "accept", "acceptSettings": { "forSession": false } }` or `{ "decision": "decline" }`.
 4. `item/completed` — final `commandExecution` item with `status: "completed" | "failed" | "declined"` and execution output. Render this as the authoritative result.
 
@@ -504,7 +520,19 @@ Use `skills/list` to fetch the available skills (optionally scoped by `cwds`, wi
     "data": [{
         "cwd": "/Users/me/project",
         "skills": [
-            { "name": "skill-creator", "description": "Create or update a Codex skill", "enabled": true }
+            {
+              "name": "skill-creator",
+              "description": "Create or update a Codex skill",
+              "enabled": true,
+              "interface": {
+                "displayName": "Skill Creator",
+                "shortDescription": "Create or update a Codex skill",
+                "iconSmall": "icon.svg",
+                "iconLarge": "icon-large.svg",
+                "brandColor": "#111111",
+                "defaultPrompt": "Add a new skill for triaging flaky CI."
+              }
+            }
         ],
         "errors": []
     }]

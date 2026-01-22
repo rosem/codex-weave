@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -165,6 +166,7 @@ use crate::util::backoff;
 use codex_async_utils::OrCancelExt;
 use codex_otel::OtelManager;
 use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::DeveloperInstructions;
@@ -285,7 +287,7 @@ impl Codex {
             .base_instructions
             .clone()
             .or_else(|| conversation_history.get_base_instructions().map(|s| s.text))
-            .unwrap_or_else(|| model_info.base_instructions.clone());
+            .unwrap_or_else(|| model_info.get_model_instructions(config.model_personality));
 
         // TODO (aibrahim): Consolidate config.model and config.model_reasoning_effort into config.collaboration_mode
         // to avoid extracting these fields separately and constructing CollaborationMode here.
@@ -300,6 +302,7 @@ impl Codex {
             model_reasoning_summary: config.model_reasoning_summary,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions,
+            personality: config.model_personality,
             base_instructions,
             compact_prompt: config.compact_prompt.clone(),
             approval_policy: config.approval_policy.clone(),
@@ -414,6 +417,7 @@ pub(crate) struct TurnContext {
     pub(crate) developer_instructions: Option<String>,
     pub(crate) compact_prompt: Option<String>,
     pub(crate) user_instructions: Option<String>,
+    pub(crate) personality: Option<Personality>,
     pub(crate) approval_policy: AskForApproval,
     pub(crate) sandbox_policy: SandboxPolicy,
     pub(crate) shell_environment_policy: ShellEnvironmentPolicy,
@@ -453,6 +457,9 @@ pub(crate) struct SessionConfiguration {
     /// Model instructions that are appended to the base instructions.
     user_instructions: Option<String>,
 
+    /// Personality preference for the model.
+    personality: Option<Personality>,
+
     /// Base instructions for the session.
     base_instructions: String,
 
@@ -488,6 +495,9 @@ impl SessionConfiguration {
         if let Some(summary) = updates.reasoning_summary {
             next_configuration.model_reasoning_summary = summary;
         }
+        if let Some(personality) = updates.personality {
+            next_configuration.personality = Some(personality);
+        }
         if let Some(approval_policy) = updates.approval_policy {
             next_configuration.approval_policy.set(approval_policy)?;
         }
@@ -509,6 +519,7 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) collaboration_mode: Option<CollaborationMode>,
     pub(crate) reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(crate) final_output_json_schema: Option<Option<Value>>,
+    pub(crate) personality: Option<Personality>,
 }
 
 impl Session {
@@ -520,6 +531,7 @@ impl Session {
         per_turn_config.model_reasoning_effort =
             session_configuration.collaboration_mode.reasoning_effort();
         per_turn_config.model_reasoning_summary = session_configuration.model_reasoning_summary;
+        per_turn_config.model_personality = session_configuration.personality;
         per_turn_config.features = config.features.clone();
         per_turn_config
     }
@@ -565,6 +577,7 @@ impl Session {
             developer_instructions: session_configuration.developer_instructions.clone(),
             compact_prompt: session_configuration.compact_prompt.clone(),
             user_instructions: session_configuration.user_instructions.clone(),
+            personality: session_configuration.personality,
             approval_policy: session_configuration.approval_policy.value(),
             sandbox_policy: session_configuration.sandbox_policy.get().clone(),
             shell_environment_policy: per_turn_config.shell_environment_policy.clone(),
@@ -1061,6 +1074,11 @@ impl Session {
             .await
     }
 
+    pub(crate) async fn current_collaboration_mode(&self) -> CollaborationMode {
+        let state = self.state.lock().await;
+        state.session_configuration.collaboration_mode.clone()
+    }
+
     fn build_environment_update_item(
         &self,
         previous: Option<&Arc<TurnContext>>,
@@ -1101,6 +1119,34 @@ impl Session {
             )
             .into(),
         )
+    }
+
+    fn build_personality_update_item(
+        &self,
+        previous: Option<&Arc<TurnContext>>,
+        next: &TurnContext,
+    ) -> Option<ResponseItem> {
+        let personality = next.personality?;
+        if let Some(prev) = previous
+            && prev.personality == Some(personality)
+        {
+            return None;
+        }
+        let model_info = next.client.get_model_info();
+        let personality_message = Self::personality_message_for(&model_info, personality);
+
+        personality_message.map(|personality_message| {
+            DeveloperInstructions::personality_spec_message(personality_message).into()
+        })
+    }
+
+    fn personality_message_for(model_info: &ModelInfo, personality: Personality) -> Option<String> {
+        model_info
+            .model_instructions_template
+            .as_ref()
+            .and_then(|template| template.personality_messages.as_ref())
+            .and_then(|messages| messages.0.get(&personality))
+            .cloned()
     }
 
     fn build_collaboration_mode_update_item(
@@ -1144,6 +1190,11 @@ impl Session {
         ) {
             update_items.push(collaboration_mode_item);
         }
+        if let Some(personality_item) =
+            self.build_personality_update_item(previous_context, current_context)
+        {
+            update_items.push(personality_item);
+        }
         update_items
     }
 
@@ -1175,7 +1226,7 @@ impl Session {
         let rollout_items = vec![RolloutItem::EventMsg(event.msg.clone())];
         self.persist_rollout_items(&rollout_items).await;
         if let Err(e) = self.tx_event.send(event).await {
-            error!("failed to send tool call event: {e}");
+            debug!("dropping event because channel is closed: {e}");
         }
     }
 
@@ -1193,7 +1244,7 @@ impl Session {
             .await;
         self.flush_rollout().await;
         if let Err(e) = self.tx_event.send(event).await {
-            error!("failed to send tool call event: {e}");
+            debug!("dropping event because channel is closed: {e}");
         }
     }
 
@@ -1498,6 +1549,7 @@ impl Session {
             content: vec![ContentItem::InputText {
                 text: format!("Warning: {}", message.into()),
             }],
+            end_turn: None,
         };
 
         self.record_conversation_items(ctx, &[item]).await;
@@ -2007,6 +2059,7 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                 effort,
                 summary,
                 collaboration_mode,
+                personality,
             } => {
                 let collaboration_mode = if let Some(collab_mode) = collaboration_mode {
                     collab_mode
@@ -2027,6 +2080,7 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                         sandbox_policy,
                         collaboration_mode: Some(collaboration_mode),
                         reasoning_summary: summary,
+                        personality,
                         ..Default::default()
                     },
                 )
@@ -2211,6 +2265,7 @@ mod handlers {
                 final_output_json_schema,
                 items,
                 collaboration_mode,
+                personality,
             } => {
                 let collaboration_mode = collaboration_mode.or_else(|| {
                     Some(CollaborationMode::Custom(Settings {
@@ -2228,6 +2283,7 @@ mod handlers {
                         collaboration_mode,
                         reasoning_summary: Some(summary),
                         final_output_json_schema: Some(final_output_json_schema),
+                        personality,
                     },
                 )
             }
@@ -2476,8 +2532,7 @@ mod handlers {
         for cwd in cwds {
             let outcome = skills_manager.skills_for_cwd(&cwd, force_reload).await;
             let errors = super::errors_to_info(&outcome.errors);
-            let enabled_skills = outcome.enabled_skills();
-            let skills_metadata = super::skills_to_info(&enabled_skills);
+            let skills_metadata = super::skills_to_info(&outcome.skills, &outcome.disabled_paths);
             skills.push(SkillsListEntry {
                 cwd,
                 skills: skills_metadata,
@@ -2702,6 +2757,7 @@ async fn spawn_review_thread(
         developer_instructions: None,
         user_instructions: None,
         compact_prompt: parent_turn_context.compact_prompt.clone(),
+        personality: parent_turn_context.personality,
         approval_policy: parent_turn_context.approval_policy,
         sandbox_policy: parent_turn_context.sandbox_policy.clone(),
         shell_environment_policy: parent_turn_context.shell_environment_policy.clone(),
@@ -2730,7 +2786,10 @@ async fn spawn_review_thread(
         .await;
 }
 
-fn skills_to_info(skills: &[SkillMetadata]) -> Vec<ProtocolSkillMetadata> {
+fn skills_to_info(
+    skills: &[SkillMetadata],
+    disabled_paths: &HashSet<PathBuf>,
+) -> Vec<ProtocolSkillMetadata> {
     skills
         .iter()
         .map(|skill| ProtocolSkillMetadata {
@@ -2750,6 +2809,7 @@ fn skills_to_info(skills: &[SkillMetadata]) -> Vec<ProtocolSkillMetadata> {
                 }),
             path: skill.path.clone(),
             scope: skill.scope,
+            enabled: !disabled_paths.contains(&skill.path),
         })
         .collect()
 }
@@ -2987,7 +3047,7 @@ async fn run_sampling_request(
         tools: router.specs(),
         parallel_tool_calls: model_supports_parallel,
         base_instructions,
-        personality: None,
+        personality: turn_context.personality,
         output_schema: turn_context.final_output_json_schema.clone(),
     };
 
@@ -3096,11 +3156,18 @@ async fn try_run_sampling_request(
     prompt: &Prompt,
     cancellation_token: CancellationToken,
 ) -> CodexResult<SamplingRequestResult> {
+    // TODO: If we need to guarantee the persisted mode always matches the prompt used for this
+    // turn, capture it in TurnContext at creation time. Using SessionConfiguration here avoids
+    // duplicating model settings on TurnContext, but a later Op could update the session config
+    // before this write occurs.
+    let collaboration_mode = sess.current_collaboration_mode().await;
     let rollout_item = RolloutItem::TurnContext(TurnContextItem {
         cwd: turn_context.cwd.clone(),
         approval_policy: turn_context.approval_policy,
         sandbox_policy: turn_context.sandbox_policy.clone(),
         model: turn_context.client.get_model(),
+        personality: turn_context.personality,
+        collaboration_mode: Some(collaboration_mode),
         effort: turn_context.client.get_reasoning_effort(),
         summary: turn_context.client.get_reasoning_summary(),
         user_instructions: turn_context.user_instructions.clone(),
@@ -3598,6 +3665,7 @@ mod tests {
                 content: vec![ContentItem::InputText {
                     text: "turn 1 user".to_string(),
                 }],
+                end_turn: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -3605,6 +3673,7 @@ mod tests {
                 content: vec![ContentItem::OutputText {
                     text: "turn 1 assistant".to_string(),
                 }],
+                end_turn: None,
             },
         ];
         sess.record_into_history(&turn_1, tc.as_ref()).await;
@@ -3616,6 +3685,7 @@ mod tests {
                 content: vec![ContentItem::InputText {
                     text: "turn 2 user".to_string(),
                 }],
+                end_turn: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -3623,6 +3693,7 @@ mod tests {
                 content: vec![ContentItem::OutputText {
                     text: "turn 2 assistant".to_string(),
                 }],
+                end_turn: None,
             },
         ];
         sess.record_into_history(&turn_2, tc.as_ref()).await;
@@ -3654,6 +3725,7 @@ mod tests {
             content: vec![ContentItem::InputText {
                 text: "turn 1 user".to_string(),
             }],
+            end_turn: None,
         }];
         sess.record_into_history(&turn_1, tc.as_ref()).await;
 
@@ -3727,10 +3799,11 @@ mod tests {
             model_reasoning_summary: config.model_reasoning_summary,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
+            personality: config.model_personality,
             base_instructions: config
                 .base_instructions
                 .clone()
-                .unwrap_or_else(|| model_info.base_instructions.clone()),
+                .unwrap_or_else(|| model_info.get_model_instructions(config.model_personality)),
             compact_prompt: config.compact_prompt.clone(),
             approval_policy: config.approval_policy.clone(),
             sandbox_policy: config.sandbox_policy.clone(),
@@ -3802,10 +3875,11 @@ mod tests {
             model_reasoning_summary: config.model_reasoning_summary,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
+            personality: config.model_personality,
             base_instructions: config
                 .base_instructions
                 .clone()
-                .unwrap_or_else(|| model_info.base_instructions.clone()),
+                .unwrap_or_else(|| model_info.get_model_instructions(config.model_personality)),
             compact_prompt: config.compact_prompt.clone(),
             approval_policy: config.approval_policy.clone(),
             sandbox_policy: config.sandbox_policy.clone(),
@@ -4061,10 +4135,11 @@ mod tests {
             model_reasoning_summary: config.model_reasoning_summary,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
+            personality: config.model_personality,
             base_instructions: config
                 .base_instructions
                 .clone()
-                .unwrap_or_else(|| model_info.base_instructions.clone()),
+                .unwrap_or_else(|| model_info.get_model_instructions(config.model_personality)),
             compact_prompt: config.compact_prompt.clone(),
             approval_policy: config.approval_policy.clone(),
             sandbox_policy: config.sandbox_policy.clone(),
@@ -4165,10 +4240,11 @@ mod tests {
             model_reasoning_summary: config.model_reasoning_summary,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
+            personality: config.model_personality,
             base_instructions: config
                 .base_instructions
                 .clone()
-                .unwrap_or_else(|| model_info.base_instructions.clone()),
+                .unwrap_or_else(|| model_info.get_model_instructions(config.model_personality)),
             compact_prompt: config.compact_prompt.clone(),
             approval_policy: config.approval_policy.clone(),
             sandbox_policy: config.sandbox_policy.clone(),
@@ -4546,6 +4622,7 @@ mod tests {
             content: vec![ContentItem::InputText {
                 text: "first user".to_string(),
             }],
+            end_turn: None,
         };
         live_history.record_items(std::iter::once(&user1), turn_context.truncation_policy);
         rollout_items.push(RolloutItem::ResponseItem(user1.clone()));
@@ -4556,6 +4633,7 @@ mod tests {
             content: vec![ContentItem::OutputText {
                 text: "assistant reply one".to_string(),
             }],
+            end_turn: None,
         };
         live_history.record_items(std::iter::once(&assistant1), turn_context.truncation_policy);
         rollout_items.push(RolloutItem::ResponseItem(assistant1.clone()));
@@ -4580,6 +4658,7 @@ mod tests {
             content: vec![ContentItem::InputText {
                 text: "second user".to_string(),
             }],
+            end_turn: None,
         };
         live_history.record_items(std::iter::once(&user2), turn_context.truncation_policy);
         rollout_items.push(RolloutItem::ResponseItem(user2.clone()));
@@ -4590,6 +4669,7 @@ mod tests {
             content: vec![ContentItem::OutputText {
                 text: "assistant reply two".to_string(),
             }],
+            end_turn: None,
         };
         live_history.record_items(std::iter::once(&assistant2), turn_context.truncation_policy);
         rollout_items.push(RolloutItem::ResponseItem(assistant2.clone()));
@@ -4614,6 +4694,7 @@ mod tests {
             content: vec![ContentItem::InputText {
                 text: "third user".to_string(),
             }],
+            end_turn: None,
         };
         live_history.record_items(std::iter::once(&user3), turn_context.truncation_policy);
         rollout_items.push(RolloutItem::ResponseItem(user3));
@@ -4624,6 +4705,7 @@ mod tests {
             content: vec![ContentItem::OutputText {
                 text: "assistant reply three".to_string(),
             }],
+            end_turn: None,
         };
         live_history.record_items(std::iter::once(&assistant3), turn_context.truncation_policy);
         rollout_items.push(RolloutItem::ResponseItem(assistant3));

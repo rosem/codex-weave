@@ -35,7 +35,6 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::text::Line;
 use std::time::Duration;
 
 mod approval_overlay;
@@ -60,6 +59,8 @@ mod footer;
 mod list_selection_view;
 mod prompt_args;
 mod skill_popup;
+mod skills_toggle_view;
+pub(crate) use footer::CollaborationModeIndicator;
 mod weave_agent_popup;
 mod weave_command_popup;
 pub(crate) use list_selection_view::SelectionViewParams;
@@ -67,6 +68,8 @@ mod feedback_view;
 pub(crate) use feedback_view::feedback_disabled_params;
 pub(crate) use feedback_view::feedback_selection_params;
 pub(crate) use feedback_view::feedback_upload_consent_params;
+pub(crate) use skills_toggle_view::SkillsToggleItem;
+pub(crate) use skills_toggle_view::SkillsToggleView;
 mod paste_burst;
 pub mod popup_consts;
 mod queued_user_messages;
@@ -217,6 +220,14 @@ impl BottomPane {
 
     pub fn set_collaboration_modes_enabled(&mut self, enabled: bool) {
         self.composer.set_collaboration_modes_enabled(enabled);
+        self.request_redraw();
+    }
+
+    pub fn set_collaboration_mode_indicator(
+        &mut self,
+        indicator: Option<CollaborationModeIndicator>,
+    ) {
+        self.composer.set_collaboration_mode_indicator(indicator);
         self.request_redraw();
     }
 
@@ -568,23 +579,6 @@ impl BottomPane {
     /// Update custom prompts available for the slash popup.
     pub(crate) fn set_custom_prompts(&mut self, prompts: Vec<CustomPrompt>) {
         self.composer.set_custom_prompts(prompts);
-        self.request_redraw();
-    }
-
-    pub(crate) fn flash_footer_hint(&mut self, line: Line<'static>, duration: Duration) {
-        self.composer.show_footer_flash(line, duration);
-        let frame_requester = self.frame_requester.clone();
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                tokio::time::sleep(duration).await;
-                frame_requester.schedule_frame();
-            });
-        } else {
-            std::thread::spawn(move || {
-                std::thread::sleep(duration);
-                frame_requester.schedule_frame();
-            });
-        }
         self.request_redraw();
     }
 

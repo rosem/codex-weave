@@ -217,7 +217,6 @@ v2_enum_from_core!(
     }
 );
 
-// TODO(mbolin): Support in-repo layer.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
 #[ts(tag = "type")]
@@ -449,6 +448,10 @@ pub enum ConfigWriteErrorCode {
 pub struct ConfigReadParams {
     #[serde(default)]
     pub include_layers: bool,
+    /// Optional working directory to resolve project config layers. If specified,
+    /// return the effective config as seen from that directory (i.e., including any
+    /// project layers between `cwd` and the project/repo root).
+    pub cwd: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1202,6 +1205,9 @@ pub struct ThreadListParams {
     /// Optional provider filter; when set, only sessions recorded under these
     /// providers are returned. When present but empty, includes all providers.
     pub model_providers: Option<Vec<String>>,
+    /// Optional archived filter; when set to true, only archived threads are returned.
+    /// If false or null, only non-archived threads are returned.
+    pub archived: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, JsonSchema, TS)]
@@ -1241,6 +1247,23 @@ pub struct ThreadLoadedListResponse {
     /// Opaque cursor to pass to the next call to continue after the last item.
     /// if None, there are no more items to return.
     pub next_cursor: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadReadParams {
+    pub thread_id: String,
+    /// When true, include turns and their items from rollout history.
+    #[serde(default)]
+    pub include_turns: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadReadResponse {
+    pub thread: Thread,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1414,7 +1437,8 @@ pub struct Thread {
     pub source: SessionSource,
     /// Optional Git metadata captured when the thread was created.
     pub git_info: Option<GitInfo>,
-    /// Only populated on `thread/resume`, `thread/rollback`, `thread/fork` responses.
+    /// Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read`
+    /// (when `includeTurns` is true) responses.
     /// For all other responses and notifications returning a Thread,
     /// the turns field will be an empty list.
     pub turns: Vec<Turn>,
@@ -2260,6 +2284,18 @@ pub struct CommandExecutionRequestApprovalParams {
     pub item_id: String,
     /// Optional explanatory reason (e.g. request for network access).
     pub reason: Option<String>,
+    /// The command to be executed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub command: Option<String>,
+    /// The command's working directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cwd: Option<PathBuf>,
+    /// Best-effort parsed command actions for friendly display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub command_actions: Option<Vec<CommandAction>>,
     /// Optional proposed execpolicy amendment to allow similar commands without prompting.
     pub proposed_execpolicy_amendment: Option<ExecPolicyAmendment>,
 }
@@ -2327,8 +2363,7 @@ pub struct ToolRequestUserInputParams {
 #[ts(export_to = "v2/")]
 /// EXPERIMENTAL. Captures a user's answer to a request_user_input question.
 pub struct ToolRequestUserInputAnswer {
-    pub selected: Vec<String>,
-    pub other: Option<String>,
+    pub answers: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

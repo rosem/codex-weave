@@ -137,6 +137,7 @@ async fn request_user_input_round_trip_resolves_pending() -> anyhow::Result<()> 
                 reasoning_effort: None,
                 developer_instructions: None,
             })),
+            personality: None,
         })
         .await?;
 
@@ -152,8 +153,7 @@ async fn request_user_input_round_trip_resolves_pending() -> anyhow::Result<()> 
     answers.insert(
         "confirm_path".to_string(),
         RequestUserInputAnswer {
-            selected: vec!["yes".to_string()],
-            other: None,
+            answers: vec!["yes".to_string()],
         },
     );
     let response = RequestUserInputResponse { answers };
@@ -173,7 +173,7 @@ async fn request_user_input_round_trip_resolves_pending() -> anyhow::Result<()> 
         output_json,
         json!({
             "answers": {
-                "confirm_path": { "selected": ["yes"], "other": Value::Null }
+                "confirm_path": { "answers": ["yes"] }
             }
         })
     );
@@ -250,6 +250,7 @@ where
             effort: None,
             summary: ReasoningSummary::Auto,
             collaboration_mode: Some(collaboration_mode),
+            personality: None,
         })
         .await?;
 
