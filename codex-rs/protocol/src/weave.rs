@@ -23,11 +23,15 @@ pub enum WeaveRelayAction {
         dst: String,
         text: String,
         reply_policy: String,
+        #[serde(default)]
+        step_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         plan: Option<WeaveRelayPlan>,
     },
     Control {
         dst: String,
+        #[serde(default)]
+        step_id: String,
         command: WeaveRelayCommand,
     },
 }

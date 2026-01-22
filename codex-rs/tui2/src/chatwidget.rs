@@ -3305,13 +3305,17 @@ impl ChatWidget {
             return Err("Weave agents unavailable for relay.".to_string());
         };
         for action in actions {
-            let dst = match action {
-                WeaveRelayAction::Message { dst, .. } => dst,
-                WeaveRelayAction::Control { dst, .. } => dst,
+            let (dst, step_id) = match action {
+                WeaveRelayAction::Message { dst, step_id, .. } => (dst, step_id),
+                WeaveRelayAction::Control { dst, step_id, .. } => (dst, step_id),
             };
             let dst = dst.trim();
             if dst.is_empty() {
                 return Err("Weave relay target is empty.".to_string());
+            }
+            let step_id = step_id.trim();
+            if step_id.is_empty() {
+                return Err("Weave relay action requires step_id.".to_string());
             }
             if let WeaveRelayAction::Message { reply_policy, .. } = action {
                 let reply_policy = reply_policy.trim();
@@ -3370,9 +3374,12 @@ impl ChatWidget {
 
         for action in actions.into_iter() {
             match action {
-                WeaveRelayAction::Control { dst, command } => {
-                    let step_id =
-                        self.current_weave_plan_step_id().unwrap_or_else(new_weave_action_id);
+                WeaveRelayAction::Control {
+                    dst,
+                    command,
+                    step_id,
+                } => {
+                    let step_id = step_id.trim();
                     let dst = dst.trim().to_string();
                     if dst.is_empty() {
                         self.add_to_history(history_cell::new_error_event(
@@ -3398,7 +3405,7 @@ impl ChatWidget {
                         relay_actions.push(json!({
                             "type": "control",
                             "dst": agent.id.as_str(),
-                            "step_id": step_id.as_str(),
+                            "step_id": step_id,
                             "command": command,
                         }));
                     }
@@ -3414,12 +3421,12 @@ impl ChatWidget {
                     text,
                     plan,
                     reply_policy,
+                    step_id,
                 } => {
                     if let Some(plan) = plan {
                         self.apply_weave_plan(plan);
                     }
-                    let step_id =
-                        self.current_weave_plan_step_id().unwrap_or_else(new_weave_action_id);
+                    let step_id = step_id.trim();
                     let dst = dst.trim().to_string();
                     if dst.is_empty() {
                         self.add_to_history(history_cell::new_error_event(
@@ -3456,7 +3463,7 @@ impl ChatWidget {
                             relay_actions.push(json!({
                                 "type": "control",
                                 "dst": agent.id.as_str(),
-                                "step_id": step_id.as_str(),
+                                "step_id": step_id,
                                 "command": command,
                             }));
                         }
@@ -3485,7 +3492,7 @@ impl ChatWidget {
                         let mut payload = serde_json::Map::new();
                         payload.insert("type".to_string(), json!("message"));
                         payload.insert("dst".to_string(), json!(agent.id.as_str()));
-                        payload.insert("step_id".to_string(), json!(step_id.as_str()));
+                        payload.insert("step_id".to_string(), json!(step_id));
                         payload.insert("text".to_string(), json!(cleaned_text));
                         payload.insert("reply_policy".to_string(), json!(relay_reply_policy));
                         if let Some(reply_to_action_id) = reply_to_action_id {
@@ -3643,21 +3650,6 @@ impl ChatWidget {
             return;
         };
         self.add_to_history(history_cell::new_plan_update(Self::weave_plan_update(plan)));
-    }
-
-    fn current_weave_plan_step_id(&self) -> Option<String> {
-        let plan = self.active_weave_plan.as_ref()?;
-        if let Some(step) = plan
-            .steps
-            .iter()
-            .find(|step| matches!(step.status, StepStatus::InProgress))
-        {
-            return Some(step.id.clone());
-        }
-        plan.steps
-            .iter()
-            .find(|step| matches!(step.status, StepStatus::Pending))
-            .map(|step| step.id.clone())
     }
 
     fn mark_weave_plan_action_started(&mut self, step_id: &str) -> bool {
@@ -8251,6 +8243,10 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], wants_plan: bool) -> String 
             .to_string(),
     );
     lines.push(
+        "Every action must include a step_id. If you include a plan, use step_1, step_2, ... matching plan.steps order."
+            .to_string(),
+    );
+    lines.push(
         "If asked to call /new, /interrupt, /compact, or /review, send a control action instead of describing it."
             .to_string(),
     );
@@ -8285,21 +8281,21 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], wants_plan: bool) -> String 
     );
     if wants_plan {
         lines.push(
-            r#"{"type":"relay_actions","actions":[{"type":"message","dst":"<agent_id_or_name>","text":"...","reply_policy":"sender","plan":{"steps":["..."]}}]}"#
+            r#"{"type":"relay_actions","actions":[{"type":"message","dst":"<agent_id_or_name>","step_id":"step_1","text":"...","reply_policy":"sender","plan":{"steps":["..."]}}]}"#
                 .to_string(),
         );
     } else {
         lines.push(
-            r#"{"type":"relay_actions","actions":[{"type":"message","dst":"<agent_id_or_name>","text":"...","reply_policy":"sender"}]}"#
+            r#"{"type":"relay_actions","actions":[{"type":"message","dst":"<agent_id_or_name>","step_id":"step_1","text":"...","reply_policy":"sender"}]}"#
                 .to_string(),
         );
     }
     lines.push(
-        r#"{"type":"relay_actions","actions":[{"type":"message","dst":"<agent_a>","text":"...","reply_policy":"sender"},{"type":"message","dst":"<agent_b>","text":"...","reply_policy":"sender"}]}"#
+        r#"{"type":"relay_actions","actions":[{"type":"message","dst":"<agent_a>","step_id":"step_1","text":"...","reply_policy":"sender"},{"type":"message","dst":"<agent_b>","step_id":"step_2","text":"...","reply_policy":"sender"}]}"#
             .to_string(),
     );
     lines.push(
-        r#"{"type":"relay_actions","actions":[{"type":"control","dst":"<agent_id_or_name>","command":"new"}]}"#.to_string(),
+        r#"{"type":"relay_actions","actions":[{"type":"control","dst":"<agent_id_or_name>","step_id":"step_1","command":"new"}]}"#.to_string(),
     );
     lines.push(r#"{"type":"task_done","summary":"..."}"#.to_string());
     lines.join("\n")
