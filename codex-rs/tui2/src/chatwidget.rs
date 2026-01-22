@@ -204,6 +204,7 @@ use codex_protocol::plan_tool::StepStatus;
 use codex_protocol::plan_tool::UpdatePlanArgs;
 use codex_protocol::weave::WeaveRelayAction;
 use codex_protocol::weave::WeaveRelayCommand;
+use codex_protocol::weave::WeaveRelayDoneRequest;
 use codex_protocol::weave::WeaveRelayOutput;
 use codex_protocol::weave::WeaveRelayPlan;
 use codex_protocol::weave::parse_weave_relay_output;
@@ -3453,11 +3454,15 @@ impl ChatWidget {
             return false;
         };
 
-        let WeaveRelayOutput::RelayActions { ref actions } = output;
+        let (actions, done) = match &output {
+            WeaveRelayOutput::RelayActions { actions, done } => (actions, done.as_ref()),
+        };
         let targets = if let Some(targets) = pending_targets {
             targets
         } else if let Some(active_targets) = self.active_weave_relay.clone() {
-            if let Err(message) = self.validate_relay_actions_scope(actions, &active_targets) {
+            if !actions.is_empty()
+                && let Err(message) = self.validate_relay_actions_scope(actions, &active_targets)
+            {
                 self.add_to_history(history_cell::new_error_event(message));
                 return true;
             }
@@ -3470,8 +3475,23 @@ impl ChatWidget {
         self.weave_relay_buffer.clear();
         self.pending_weave_relay = None;
 
+        let done_requested = done.map(WeaveRelayDoneRequest::is_requested).unwrap_or(false);
+        let done_summary = done
+            .and_then(WeaveRelayDoneRequest::summary)
+            .map(ToString::to_string);
+        if done_requested {
+            if !actions.is_empty() {
+                self.add_to_history(history_cell::new_error_event(
+                    "Weave relay done cannot include actions.".to_string(),
+                ));
+                return true;
+            }
+            self.send_weave_relay_done(&targets, done_summary);
+            return true;
+        }
+
         match output {
-            WeaveRelayOutput::RelayActions { actions } => {
+            WeaveRelayOutput::RelayActions { actions, .. } => {
                 if actions.is_empty() {
                     return true;
                 }
@@ -3759,6 +3779,41 @@ impl ChatWidget {
             }
         });
         true
+    }
+
+    fn send_weave_relay_done(&mut self, targets: &WeaveRelayTargets, summary: Option<String>) {
+        let Some(connection) = self.weave_agent_connection.as_ref() else {
+            self.add_to_history(history_cell::new_error_event(
+                "Weave session isn't connected.".to_string(),
+            ));
+            return;
+        };
+        let relay_id = targets.relay_id.clone();
+        let summary = summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+        let mut done_payload = serde_json::Map::new();
+        done_payload.insert("relay_id".to_string(), json!(relay_id.clone()));
+        if let Some(summary) = summary {
+            done_payload.insert("summary".to_string(), json!(summary));
+        }
+        let payload = json!({
+            "relay_id": relay_id,
+            "done": Value::Object(done_payload),
+        });
+        let sender = connection.sender();
+        let app_event_tx = self.app_event_tx.clone();
+        let relay_id = targets.relay_id.clone();
+        tokio::spawn(async move {
+            if let Err(err) = sender.send_relay_submit(payload).await {
+                app_event_tx.send(AppEvent::WeaveRelaySubmitFailed {
+                    relay_id,
+                    message: err,
+                });
+            }
+        });
     }
 
     fn apply_weave_plan(&mut self, plan: WeaveRelayPlan) {
@@ -8561,6 +8616,7 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], wants_plan: bool) -> String 
     );
     lines.push("Action types: \"message\", \"control\".".to_string());
     lines.push("Provide a `command` for control actions.".to_string());
+    lines.push("Only /review supports args; include args as a string field on the control action.".to_string());
     lines.push(
         "For message actions, include expects_reply: true when a reply is required, false otherwise."
             .to_string(),
@@ -8570,7 +8626,7 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], wants_plan: bool) -> String 
             .to_string(),
     );
     lines.push(
-        "If asked to call /new, /interrupt, or /compact, send a control action instead of describing it."
+        "If asked to call /new, /interrupt, /compact, or /review, send a control action instead of describing it."
             .to_string(),
     );
     lines.push(
@@ -8599,6 +8655,10 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], wants_plan: bool) -> String 
     lines.push(
         "Respond ONLY with a single-line JSON object. No extra text, no code fences.".to_string(),
     );
+    lines.push(
+        "To finish the relay, send done: true with an empty actions array; do not include actions with done."
+            .to_string(),
+    );
     if wants_plan {
         lines.push(
             r#"{"type":"relay_actions","actions":[{"type":"message","dst":"<agent_id_or_name>","plan_step_id":"step_1","text":"...","expects_reply":true,"plan":{"steps":["..."]}}]}"#
@@ -8617,6 +8677,10 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], wants_plan: bool) -> String 
     lines.push(
         r#"{"type":"relay_actions","actions":[{"type":"control","dst":"<agent_id_or_name>","plan_step_id":"step_1","command":"new"}]}"#.to_string(),
     );
+    lines.push(
+        r#"{"type":"relay_actions","actions":[{"type":"control","dst":"<agent_id_or_name>","plan_step_id":"step_1","command":"review","args":"focus on error handling"}]}"#.to_string(),
+    );
+    lines.push(r#"{"type":"relay_actions","actions":[],"done":true}"#.to_string());
     lines.join("\n")
 }
 

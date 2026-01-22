@@ -68,6 +68,7 @@ use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::plan_tool::PlanItemArg;
 use codex_protocol::plan_tool::StepStatus;
 use codex_protocol::plan_tool::UpdatePlanArgs;
+use codex_protocol::weave::WeaveRelayDoneRequest;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::user_input::TextElement;
 use codex_protocol::user_input::UserInput;
@@ -4555,7 +4556,7 @@ async fn weave_message_accepts_missing_task_id() {
 fn parse_weave_relay_output_actions() {
     let payload = r#"{"type":"relay_actions","actions":[{"type":"message","dst":"agent-a","plan_step_id":"step_1","text":"Tell a joke","expects_reply":true},{"type":"control","dst":"agent-b","plan_step_id":"step_2","command":"new"}]}"#;
     let output = codex_protocol::weave::parse_weave_relay_output(payload).expect("output");
-    assert_matches!(output, WeaveRelayOutput::RelayActions { actions } => {
+    assert_matches!(output, WeaveRelayOutput::RelayActions { actions, .. } => {
         assert_eq!(actions.len(), 2);
         assert_matches!(&actions[0], WeaveRelayAction::Message { dst, text, plan, expects_reply, .. } => {
             assert_eq!(dst, "agent-a");
@@ -4574,7 +4575,7 @@ fn parse_weave_relay_output_actions() {
 fn parse_weave_relay_output_review_args() {
     let payload = r#"{"type":"relay_actions","actions":[{"type":"control","dst":"agent-a","plan_step_id":"step_1","command":"review","args":"focus on error handling"}]}"#;
     let output = codex_protocol::weave::parse_weave_relay_output(payload).expect("output");
-    assert_matches!(output, WeaveRelayOutput::RelayActions { actions } => {
+    assert_matches!(output, WeaveRelayOutput::RelayActions { actions, .. } => {
         assert_eq!(actions.len(), 1);
         assert_matches!(&actions[0], WeaveRelayAction::Control { dst, command, args, .. } => {
             assert_eq!(dst, "agent-a");
@@ -4585,10 +4586,32 @@ fn parse_weave_relay_output_review_args() {
 }
 
 #[test]
+fn parse_weave_relay_output_done_flag() {
+    let payload = r#"{"type":"relay_actions","actions":[],"done":true}"#;
+    let output = codex_protocol::weave::parse_weave_relay_output(payload).expect("output");
+    assert_matches!(output, WeaveRelayOutput::RelayActions { actions, done } => {
+        assert!(actions.is_empty());
+        assert_matches!(done, Some(WeaveRelayDoneRequest::Flag(true)));
+    });
+}
+
+#[test]
+fn parse_weave_relay_output_done_summary() {
+    let payload = r#"{"type":"relay_actions","actions":[],"done":{"summary":"finished"}}"#;
+    let output = codex_protocol::weave::parse_weave_relay_output(payload).expect("output");
+    assert_matches!(output, WeaveRelayOutput::RelayActions { actions, done } => {
+        assert!(actions.is_empty());
+        assert_matches!(done, Some(WeaveRelayDoneRequest::Summary { summary }) => {
+            assert_eq!(summary.as_deref(), Some("finished"));
+        });
+    });
+}
+
+#[test]
 fn parse_weave_relay_output_allows_missing_expects_reply() {
     let payload = r#"{"type":"relay_actions","actions":[{"type":"message","dst":"agent-a","plan_step_id":"step_1","text":"Tell a joke"}]}"#;
     let output = codex_protocol::weave::parse_weave_relay_output(payload).expect("output");
-    assert_matches!(output, WeaveRelayOutput::RelayActions { actions } => {
+    assert_matches!(output, WeaveRelayOutput::RelayActions { actions, .. } => {
         assert_eq!(actions.len(), 1);
         assert_matches!(&actions[0], WeaveRelayAction::Message { expects_reply, .. } => {
             assert_eq!(expects_reply, &None);

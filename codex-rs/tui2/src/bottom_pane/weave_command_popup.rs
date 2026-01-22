@@ -87,7 +87,6 @@ impl WeaveCommandPopup {
             WeaveCommand::New,
             WeaveCommand::Interrupt,
             WeaveCommand::Compact,
-            WeaveCommand::Review,
         ]
     }
 

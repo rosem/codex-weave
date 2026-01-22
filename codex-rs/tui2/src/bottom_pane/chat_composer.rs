@@ -1685,7 +1685,6 @@ impl ChatComposer {
             WeaveCommand::New,
             WeaveCommand::Interrupt,
             WeaveCommand::Compact,
-            WeaveCommand::Review,
         ];
         let has_match = commands
             .iter()

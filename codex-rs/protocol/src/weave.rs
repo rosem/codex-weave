@@ -9,7 +9,35 @@ use ts_rs::TS;
 pub enum WeaveRelayOutput {
     RelayActions {
         actions: Vec<WeaveRelayAction>,
+        #[serde(default)]
+        done: Option<WeaveRelayDoneRequest>,
     },
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(untagged)]
+pub enum WeaveRelayDoneRequest {
+    Flag(bool),
+    Summary {
+        #[serde(default)]
+        summary: Option<String>,
+    },
+}
+
+impl WeaveRelayDoneRequest {
+    pub fn is_requested(&self) -> bool {
+        match self {
+            Self::Flag(value) => *value,
+            Self::Summary { .. } => true,
+        }
+    }
+
+    pub fn summary(&self) -> Option<&str> {
+        match self {
+            Self::Summary { summary } => summary.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
