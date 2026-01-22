@@ -548,7 +548,7 @@ struct WeaveRelayTargetState {
 struct WeavePendingAction {
     group_id: String,
     expects_reply: bool,
-    step_id: Option<String>,
+    plan_step_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -876,16 +876,18 @@ fn format_weave_prompt(ctx: WeavePromptContext<'_>) -> String {
                 lines.push(format!("Weave task pending replies: {pending}"));
                 if pending == "none" {
                     lines.push(
-                        "If the task is complete, respond with type \"task_done\".".to_string(),
+                        "If you have no actions to send, respond with relay_actions and an empty actions array to wait."
+                            .to_string(),
                     );
                 } else {
                     lines.push(
-                        "Wait for pending replies unless you need clarification.".to_string(),
+                        "Wait for pending replies from the same target before follow-ups to that target unless the user says otherwise."
+                            .to_string(),
                     );
                 }
             }
             lines.push(
-                "When coordinating multiple agents, wait for all replies before sending follow-ups; do not ping unless the user explicitly asks."
+                "When coordinating multiple agents, wait for replies from the same target before sending follow-ups to that target; do not ping unless the user explicitly asks."
                     .to_string(),
             );
             lines.push(
@@ -905,7 +907,7 @@ fn format_weave_prompt(ctx: WeavePromptContext<'_>) -> String {
                     .to_string(),
             );
             lines.push(
-                "For each message action, include reply_policy: \"sender\" if you need a reply, \"none\" for acknowledgements or info."
+                "For each message action, include expects_reply: true if you need a reply, false for acknowledgements or info."
                     .to_string(),
             );
             lines.push("/new resets the target's context but keeps them in the relay.".to_string());
@@ -914,7 +916,7 @@ fn format_weave_prompt(ctx: WeavePromptContext<'_>) -> String {
                     .to_string(),
             );
             lines.push(
-                "Do not split a message and a control across separate turns; send task_done only after all relay_actions are sent."
+                "Do not split a message and a control across separate turns; keep related actions in a single relay_actions response."
                     .to_string(),
             );
             lines.push(
@@ -923,9 +925,6 @@ fn format_weave_prompt(ctx: WeavePromptContext<'_>) -> String {
             );
             lines.push("Cross-target ordering is not guaranteed.".to_string());
             lines.push("Action types: \"message\", \"control\".".to_string());
-            lines.push(
-                "When the task is complete, respond with type \"task_done\" and a brief summary for the local user.".to_string(),
-            );
             lines.push(
                 "If you already provided a plan for this task, do not repeat it.".to_string(),
             );
@@ -3416,8 +3415,7 @@ impl ChatWidget {
         if trimmed.is_empty() {
             return false;
         }
-        let has_type = trimmed.contains("\"type\"")
-            && (trimmed.contains("relay_actions") || trimmed.contains("task_done"));
+        let has_type = trimmed.contains("\"type\"") && trimmed.contains("relay_actions");
         has_type && (trimmed.starts_with('{') || trimmed.starts_with("```"))
     }
 
@@ -3440,12 +3438,11 @@ impl ChatWidget {
             return false;
         };
 
+        let WeaveRelayOutput::RelayActions { ref actions } = output;
         let targets = if let Some(targets) = pending_targets {
             targets
         } else if let Some(active_targets) = self.active_weave_relay.clone() {
-            if let WeaveRelayOutput::RelayActions { ref actions } = output
-                && let Err(message) = self.validate_relay_actions_scope(actions, &active_targets)
-            {
+            if let Err(message) = self.validate_relay_actions_scope(actions, &active_targets) {
                 self.add_to_history(history_cell::new_error_event(message));
                 return true;
             }
@@ -3459,30 +3456,11 @@ impl ChatWidget {
         self.pending_weave_relay = None;
 
         match output {
-            WeaveRelayOutput::TaskDone { summary } => {
-                if self.relay_has_pending_replies(&targets) {
-                    return true;
-                }
-                let summary = summary
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|summary| !summary.is_empty())
-                    .map(ToString::to_string);
-                self.send_weave_relay_done(&targets, summary.clone());
-                self.finish_weave_task(&targets, summary);
-                true
-            }
             WeaveRelayOutput::RelayActions { actions } => {
                 if actions.is_empty() {
-                    self.add_to_history(history_cell::new_error_event(
-                        "Weave relay returned no actions; respond with relay_actions or task_done."
-                            .to_string(),
-                    ));
-                    self.clear_weave_task_state(&targets);
-                    true
-                } else {
-                    self.apply_weave_relay_actions(&targets, actions)
+                    return true;
                 }
+                self.apply_weave_relay_actions(&targets, actions)
             }
         }
     }
@@ -3496,30 +3474,23 @@ impl ChatWidget {
             return Err("Weave agents unavailable for relay.".to_string());
         };
         for action in actions {
-            let (dst, step_id) = match action {
-                WeaveRelayAction::Message { dst, step_id, .. } => (dst, step_id),
-                WeaveRelayAction::Control { dst, step_id, .. } => (dst, step_id),
+            let (dst, plan_step_id) = match action {
+                WeaveRelayAction::Message { dst, plan_step_id, .. } => (dst, plan_step_id),
+                WeaveRelayAction::Control { dst, plan_step_id, .. } => (dst, plan_step_id),
             };
             let dst = dst.trim();
             if dst.is_empty() {
                 return Err("Weave relay target is empty.".to_string());
             }
-            let step_id = step_id.trim();
-            if step_id.is_empty() {
-                return Err("Weave relay action requires step_id.".to_string());
+            let plan_step_id = plan_step_id.trim();
+            if plan_step_id.is_empty() {
+                return Err("Weave relay action requires plan_step_id.".to_string());
             }
-            if let WeaveRelayAction::Message { reply_policy, .. } = action {
-                let reply_policy = reply_policy.trim();
-                if reply_policy.is_empty() {
+            if let WeaveRelayAction::Message { expects_reply, .. } = action {
+                if expects_reply.is_none() {
                     return Err(
-                        "Weave relay message requires reply_policy (sender|none).".to_string()
+                        "Weave relay message requires expects_reply (true|false).".to_string(),
                     );
-                }
-                match reply_policy {
-                    "sender" | "none" => {}
-                    _ => {
-                        return Err("Weave relay reply_policy must be sender or none.".to_string());
-                    }
                 }
             }
             let resolved =
@@ -3568,9 +3539,9 @@ impl ChatWidget {
                 WeaveRelayAction::Control {
                     dst,
                     command,
-                    step_id,
+                    plan_step_id,
                 } => {
-                    let step_id = step_id.trim();
+                    let plan_step_id = plan_step_id.trim();
                     let dst = dst.trim().to_string();
                     if dst.is_empty() {
                         self.add_to_history(history_cell::new_error_event(
@@ -3596,7 +3567,7 @@ impl ChatWidget {
                         relay_actions.push(json!({
                             "type": "control",
                             "dst": agent.id.as_str(),
-                            "step_id": step_id,
+                            "plan_step_id": plan_step_id,
                             "command": command,
                         }));
                     }
@@ -3611,13 +3582,13 @@ impl ChatWidget {
                     dst,
                     text,
                     plan,
-                    reply_policy,
-                    step_id,
+                    expects_reply,
+                    plan_step_id,
                 } => {
                     if let Some(plan) = plan {
                         self.apply_weave_plan(plan);
                     }
-                    let step_id = step_id.trim();
+                    let plan_step_id = plan_step_id.trim();
                     let dst = dst.trim().to_string();
                     if dst.is_empty() {
                         self.add_to_history(history_cell::new_error_event(
@@ -3637,7 +3608,6 @@ impl ChatWidget {
                         handled = true;
                         continue;
                     }
-                    let relay_reply_policy = reply_policy.trim();
                     let cleaned_text = text.trim();
                     if cleaned_text.is_empty() {
                         self.add_to_history(history_cell::new_error_event(
@@ -3654,7 +3624,7 @@ impl ChatWidget {
                             relay_actions.push(json!({
                                 "type": "control",
                                 "dst": agent.id.as_str(),
-                                "step_id": step_id,
+                                "plan_step_id": plan_step_id,
                                 "command": command,
                             }));
                         }
@@ -3669,9 +3639,10 @@ impl ChatWidget {
                         handled = true;
                         continue;
                     }
+                    let expects_reply = expects_reply.unwrap_or(false);
                     let mut targets_log = Vec::new();
                     for agent in &resolved {
-                        let reply_to_action_id = if relay_reply_policy == "none" {
+                        let reply_to_action_id = if !expects_reply {
                             self.weave_target_states
                                 .get(&agent.id)
                                 .filter(|state| state.has_pending_reply())
@@ -3683,9 +3654,9 @@ impl ChatWidget {
                         let mut payload = serde_json::Map::new();
                         payload.insert("type".to_string(), json!("message"));
                         payload.insert("dst".to_string(), json!(agent.id.as_str()));
-                        payload.insert("step_id".to_string(), json!(step_id));
+                        payload.insert("plan_step_id".to_string(), json!(plan_step_id));
                         payload.insert("text".to_string(), json!(cleaned_text));
-                        payload.insert("reply_policy".to_string(), json!(relay_reply_policy));
+                        payload.insert("expects_reply".to_string(), json!(expects_reply));
                         if let Some(reply_to_action_id) = reply_to_action_id {
                             payload.insert(
                                 "reply_to_action_id".to_string(),
@@ -3752,35 +3723,6 @@ impl ChatWidget {
         true
     }
 
-    fn send_weave_relay_done(&mut self, targets: &WeaveRelayTargets, summary: Option<String>) {
-        let Some(connection) = self.weave_agent_connection.as_ref() else {
-            self.add_to_history(history_cell::new_error_event(
-                "Weave session isn't connected.".to_string(),
-            ));
-            return;
-        };
-        let relay_id = targets.relay_id.clone();
-        let mut done = serde_json::Map::new();
-        done.insert("relay_id".to_string(), json!(relay_id));
-        if let Some(summary) = summary {
-            done.insert("summary".to_string(), json!(summary));
-        }
-        let payload = json!({
-            "relay_id": relay_id,
-            "done": Value::Object(done),
-        });
-        let sender = connection.sender();
-        let app_event_tx = self.app_event_tx.clone();
-        tokio::spawn(async move {
-            if let Err(err) = sender.send_relay_submit(payload).await {
-                app_event_tx.send(AppEvent::WeaveRelaySubmitFailed {
-                    relay_id,
-                    message: err,
-                });
-            }
-        });
-    }
-
     fn apply_weave_plan(&mut self, plan: WeaveRelayPlan) {
         if !self.pending_weave_plan {
             return;
@@ -3843,11 +3785,11 @@ impl ChatWidget {
         self.add_to_history(history_cell::new_plan_update(Self::weave_plan_update(plan)));
     }
 
-    fn mark_weave_plan_action_started(&mut self, step_id: &str) -> bool {
+    fn mark_weave_plan_action_started(&mut self, plan_step_id: &str) -> bool {
         let Some(plan) = self.active_weave_plan.as_mut() else {
             return false;
         };
-        let Some(step) = plan.steps.iter_mut().find(|step| step.id == step_id) else {
+        let Some(step) = plan.steps.iter_mut().find(|step| step.id == plan_step_id) else {
             return false;
         };
         step.assigned_actions += 1;
@@ -3859,11 +3801,11 @@ impl ChatWidget {
         false
     }
 
-    fn mark_weave_plan_action_completed(&mut self, step_id: &str) -> bool {
+    fn mark_weave_plan_action_completed(&mut self, plan_step_id: &str) -> bool {
         let Some(plan) = self.active_weave_plan.as_mut() else {
             return false;
         };
-        let Some(step_index) = plan.steps.iter().position(|step| step.id == step_id) else {
+        let Some(step_index) = plan.steps.iter().position(|step| step.id == plan_step_id) else {
             return false;
         };
         let step = &mut plan.steps[step_index];
@@ -3933,20 +3875,6 @@ impl ChatWidget {
         self.finish_weave_task(&active, None);
     }
 
-    fn clear_weave_task_state(&mut self, targets: &WeaveRelayTargets) {
-        if self
-            .active_weave_relay
-            .as_ref()
-            .is_some_and(|relay| relay.matches(targets))
-        {
-            self.active_weave_relay = None;
-            self.active_weave_plan = None;
-            self.pending_weave_plan = false;
-            self.refresh_weave_session_label();
-            self.clear_pending_weave_actions_for_targets(targets);
-        }
-    }
-
     fn interrupt_weave_task(
         &mut self,
         conversation_id: &str,
@@ -3986,8 +3914,8 @@ impl ChatWidget {
             state.pending_actions.retain(|_, pending| {
                 let keep = !pending.expects_reply;
                 if !keep {
-                    if let Some(step_id) = pending.step_id.as_deref() {
-                        removed_steps.push(step_id.to_string());
+                    if let Some(plan_step_id) = pending.plan_step_id.as_deref() {
+                        removed_steps.push(plan_step_id.to_string());
                     }
                 }
                 keep
@@ -4000,8 +3928,8 @@ impl ChatWidget {
             (removed_steps, state.pending_actions.len() != before)
         };
         let mut plan_changed = false;
-        for step_id in removed_steps {
-            if self.mark_weave_plan_action_completed(step_id.as_str()) {
+        for plan_step_id in removed_steps {
+            if self.mark_weave_plan_action_completed(plan_step_id.as_str()) {
                 plan_changed = true;
             }
         }
@@ -6148,10 +6076,10 @@ impl ChatWidget {
                 continue;
             };
             for action in target_state.actions {
-                let expects_reply = action.action_type == "message"
-                    && action.reply_policy.as_deref() == Some("sender");
-                let step_id = action.step_id.trim();
-                if !step_id.is_empty() && self.mark_weave_plan_action_started(step_id) {
+                let expects_reply =
+                    action.action_type == "message" && action.expects_reply.unwrap_or(false);
+                let plan_step_id = action.plan_step_id.trim();
+                if !plan_step_id.is_empty() && self.mark_weave_plan_action_started(plan_step_id) {
                     plan_changed = true;
                 }
                 self.register_pending_weave_action(
@@ -6159,7 +6087,7 @@ impl ChatWidget {
                     action.action_id.as_str(),
                     group_id,
                     expects_reply,
-                    Some(action.step_id.clone()),
+                    Some(action.plan_step_id.clone()),
                 );
                 if action.action_type == "control" {
                     if action.command.as_deref() == Some("new")
@@ -6301,7 +6229,7 @@ impl ChatWidget {
         action_id: &str,
         group_id: &str,
         expects_reply: bool,
-        step_id: Option<String>,
+        plan_step_id: Option<String>,
     ) {
         let state = self
             .weave_target_states
@@ -6314,7 +6242,7 @@ impl ChatWidget {
             WeavePendingAction {
                 group_id: group_id.to_string(),
                 expects_reply,
-                step_id,
+                plan_step_id,
             },
         );
     }
@@ -6328,8 +6256,8 @@ impl ChatWidget {
             state.pending_new_action_id = None;
         }
         if let Some(pending) = removed {
-            if let Some(step_id) = pending.step_id.as_deref()
-                && self.mark_weave_plan_action_completed(step_id)
+            if let Some(plan_step_id) = pending.plan_step_id.as_deref()
+                && self.mark_weave_plan_action_completed(plan_step_id)
             {
                 self.emit_weave_plan_update();
             }
@@ -6352,8 +6280,8 @@ impl ChatWidget {
         state.pending_new_action_id = None;
         let mut plan_changed = false;
         for pending in removed.into_values() {
-            if let Some(step_id) = pending.step_id.as_deref()
-                && self.mark_weave_plan_action_completed(step_id)
+            if let Some(plan_step_id) = pending.plan_step_id.as_deref()
+                && self.mark_weave_plan_action_completed(plan_step_id)
             {
                 plan_changed = true;
             }
@@ -6371,8 +6299,8 @@ impl ChatWidget {
                 let removed = std::mem::take(&mut state.pending_actions);
                 state.pending_new_action_id = None;
                 for pending in removed.into_values() {
-                    if let Some(step_id) = pending.step_id.as_deref()
-                        && self.mark_weave_plan_action_completed(step_id)
+                    if let Some(plan_step_id) = pending.plan_step_id.as_deref()
+                        && self.mark_weave_plan_action_completed(plan_step_id)
                     {
                         plan_changed = true;
                     }
@@ -6404,8 +6332,8 @@ impl ChatWidget {
         if !removed.is_empty() {
             let mut plan_changed = false;
             for pending in removed {
-                if let Some(step_id) = pending.step_id.as_deref()
-                    && self.mark_weave_plan_action_completed(step_id)
+                if let Some(plan_step_id) = pending.plan_step_id.as_deref()
+                    && self.mark_weave_plan_action_completed(plan_step_id)
                 {
                     plan_changed = true;
                 }
@@ -8562,9 +8490,17 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], wants_plan: bool) -> String 
         lines.push(
             "- Use step_1, step_2, ... exactly matching plan.steps order.".to_string(),
         );
-        lines.push("- Do not use step_2 until step_1 is complete; never reuse a step_id.".to_string());
+        lines.push("- Do not use step_2 until step_1 is complete; never reuse a plan_step_id.".to_string());
         lines.push(
             "- If a step waits on a reply, say so in the step text.".to_string(),
+        );
+        lines.push(
+            "- If a step sends expects_reply: true, include (wait for reply) in the step text."
+                .to_string(),
+        );
+        lines.push(
+            "- Plan step text must be descriptive and must not include step_#: prefixes."
+                .to_string(),
         );
         lines.push(
             "- Keep the plan short (2–6 steps) and avoid bundling multiple rounds or targets into one step."
@@ -8580,17 +8516,17 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], wants_plan: bool) -> String 
             .to_string(),
     );
     lines.push(
-        "Never send `relay_actions` with an empty `actions` array; use `task_done` instead."
+        "If you have no actions to send, respond with relay_actions and an empty actions array to wait for replies."
             .to_string(),
     );
     lines.push("Action types: \"message\", \"control\".".to_string());
     lines.push("Provide a `command` for control actions.".to_string());
     lines.push(
-        "For message actions, include reply_policy: \"sender\" when a reply is required, \"none\" otherwise."
+        "For message actions, include expects_reply: true when a reply is required, false otherwise."
             .to_string(),
     );
     lines.push(
-        "Every action must include a step_id. If you include a plan, use step_1, step_2, ... matching plan.steps order."
+        "Every action must include a plan_step_id. If you include a plan, use step_1, step_2, ... matching plan.steps order."
             .to_string(),
     );
     lines.push(
@@ -8607,7 +8543,7 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], wants_plan: bool) -> String 
             .to_string(),
     );
     lines.push(
-        "After sending actions to multiple targets, wait for replies before sending more messages unless the user requests otherwise."
+        "After sending actions to multiple targets, wait for replies from the targets you plan to follow up with; do not let long-running agents block unrelated steps unless the user requests otherwise."
             .to_string(),
     );
     lines.push(
@@ -8615,9 +8551,6 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], wants_plan: bool) -> String 
             .to_string(),
     );
     lines.push("Cross-target ordering is not guaranteed.".to_string());
-    lines.push(
-        "When the task is complete, respond with type \"task_done\" and a brief summary for the local user.".to_string(),
-    );
     lines.push("Do not forward the original prompt verbatim.".to_string());
     lines.push(
         "Honor any instructions like \"do not share\" or secrets withheld from the target."
@@ -8628,23 +8561,22 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], wants_plan: bool) -> String 
     );
     if wants_plan {
         lines.push(
-            r#"{"type":"relay_actions","actions":[{"type":"message","dst":"<agent_id_or_name>","step_id":"step_1","text":"...","reply_policy":"sender","plan":{"steps":["..."]}}]}"#
+            r#"{"type":"relay_actions","actions":[{"type":"message","dst":"<agent_id_or_name>","plan_step_id":"step_1","text":"...","expects_reply":true,"plan":{"steps":["..."]}}]}"#
                 .to_string(),
         );
     } else {
         lines.push(
-            r#"{"type":"relay_actions","actions":[{"type":"message","dst":"<agent_id_or_name>","step_id":"step_1","text":"...","reply_policy":"sender"}]}"#
+            r#"{"type":"relay_actions","actions":[{"type":"message","dst":"<agent_id_or_name>","plan_step_id":"step_1","text":"...","expects_reply":true}]}"#
                 .to_string(),
         );
     }
     lines.push(
-        r#"{"type":"relay_actions","actions":[{"type":"message","dst":"<agent_a>","step_id":"step_1","text":"...","reply_policy":"sender"},{"type":"message","dst":"<agent_b>","step_id":"step_2","text":"...","reply_policy":"sender"}]}"#
+        r#"{"type":"relay_actions","actions":[{"type":"message","dst":"<agent_a>","plan_step_id":"step_1","text":"...","expects_reply":true},{"type":"message","dst":"<agent_b>","plan_step_id":"step_2","text":"...","expects_reply":true}]}"#
             .to_string(),
     );
     lines.push(
-        r#"{"type":"relay_actions","actions":[{"type":"control","dst":"<agent_id_or_name>","step_id":"step_1","command":"new"}]}"#.to_string(),
+        r#"{"type":"relay_actions","actions":[{"type":"control","dst":"<agent_id_or_name>","plan_step_id":"step_1","command":"new"}]}"#.to_string(),
     );
-    lines.push(r#"{"type":"task_done","summary":"..."}"#.to_string());
     lines.join("\n")
 }
 

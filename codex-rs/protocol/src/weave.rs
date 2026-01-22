@@ -10,10 +10,6 @@ pub enum WeaveRelayOutput {
     RelayActions {
         actions: Vec<WeaveRelayAction>,
     },
-    TaskDone {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        summary: Option<String>,
-    },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -22,16 +18,17 @@ pub enum WeaveRelayAction {
     Message {
         dst: String,
         text: String,
-        reply_policy: String,
         #[serde(default)]
-        step_id: String,
+        expects_reply: Option<bool>,
+        #[serde(default)]
+        plan_step_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         plan: Option<WeaveRelayPlan>,
     },
     Control {
         dst: String,
         #[serde(default)]
-        step_id: String,
+        plan_step_id: String,
         command: WeaveRelayCommand,
     },
 }

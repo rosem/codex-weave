@@ -4553,15 +4553,15 @@ async fn weave_message_accepts_missing_task_id() {
 
 #[test]
 fn parse_weave_relay_output_actions() {
-    let payload = r#"{"type":"relay_actions","actions":[{"type":"message","dst":"agent-a","step_id":"step_1","text":"Tell a joke","reply_policy":"sender"},{"type":"control","dst":"agent-b","step_id":"step_2","command":"new"}]}"#;
+    let payload = r#"{"type":"relay_actions","actions":[{"type":"message","dst":"agent-a","plan_step_id":"step_1","text":"Tell a joke","expects_reply":true},{"type":"control","dst":"agent-b","plan_step_id":"step_2","command":"new"}]}"#;
     let output = codex_protocol::weave::parse_weave_relay_output(payload).expect("output");
     assert_matches!(output, WeaveRelayOutput::RelayActions { actions } => {
         assert_eq!(actions.len(), 2);
-        assert_matches!(&actions[0], WeaveRelayAction::Message { dst, text, plan, reply_policy, .. } => {
+        assert_matches!(&actions[0], WeaveRelayAction::Message { dst, text, plan, expects_reply, .. } => {
             assert_eq!(dst, "agent-a");
             assert_eq!(text, "Tell a joke");
             assert!(plan.is_none());
-            assert_eq!(reply_policy.as_str(), "sender");
+            assert_eq!(expects_reply, &Some(true));
         });
         assert_matches!(&actions[1], WeaveRelayAction::Control { dst, command, .. } => {
             assert_eq!(dst, "agent-b");
@@ -4571,13 +4571,19 @@ fn parse_weave_relay_output_actions() {
 }
 
 #[test]
-fn parse_weave_relay_output_rejects_missing_reply_policy() {
-    let payload = r#"{"type":"relay_actions","actions":[{"type":"message","dst":"agent-a","step_id":"step_1","text":"Tell a joke"}]}"#;
-    assert!(codex_protocol::weave::parse_weave_relay_output(payload).is_none());
+fn parse_weave_relay_output_allows_missing_expects_reply() {
+    let payload = r#"{"type":"relay_actions","actions":[{"type":"message","dst":"agent-a","plan_step_id":"step_1","text":"Tell a joke"}]}"#;
+    let output = codex_protocol::weave::parse_weave_relay_output(payload).expect("output");
+    assert_matches!(output, WeaveRelayOutput::RelayActions { actions } => {
+        assert_eq!(actions.len(), 1);
+        assert_matches!(&actions[0], WeaveRelayAction::Message { expects_reply, .. } => {
+            assert_eq!(expects_reply, &None);
+        });
+    });
 }
 
 #[tokio::test]
-async fn weave_relay_rejects_invalid_reply_policy() {
+async fn weave_relay_rejects_missing_expects_reply() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     let agents = vec![WeaveAgent {
         id: "agent-a".to_string(),
@@ -4589,14 +4595,14 @@ async fn weave_relay_rejects_invalid_reply_policy() {
     let actions = vec![WeaveRelayAction::Message {
         dst: "agent-a".to_string(),
         text: "Tell a joke".to_string(),
-        reply_policy: "invalid".to_string(),
-        step_id: "step_1".to_string(),
+        expects_reply: None,
+        plan_step_id: "step_1".to_string(),
         plan: None,
     }];
     let err = chat
         .validate_relay_actions_scope(&actions, &targets)
-        .expect_err("expected reply_policy validation error");
-    assert!(err.contains("reply_policy"));
+        .expect_err("expected expects_reply validation error");
+    assert!(err.contains("expects_reply"));
 }
 
 #[tokio::test]
