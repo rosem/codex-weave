@@ -4057,6 +4057,20 @@ fn parse_weave_relay_output_actions() {
 }
 
 #[test]
+fn parse_weave_relay_output_review_args() {
+    let payload = r#"{"type":"relay_actions","actions":[{"type":"control","dst":"agent-a","plan_step_id":"step_1","command":"review","args":"focus on error handling"}]}"#;
+    let output = codex_protocol::weave::parse_weave_relay_output(payload).expect("output");
+    assert_matches!(output, WeaveRelayOutput::RelayActions { actions } => {
+        assert_eq!(actions.len(), 1);
+        assert_matches!(&actions[0], WeaveRelayAction::Control { dst, command, args, .. } => {
+            assert_eq!(dst, "agent-a");
+            assert_matches!(command, WeaveRelayCommand::Review);
+            assert_eq!(args.as_deref(), Some("focus on error handling"));
+        });
+    });
+}
+
+#[test]
 fn parse_weave_relay_output_allows_missing_expects_reply() {
     let payload = r#"{"type":"relay_actions","actions":[{"type":"message","dst":"agent-a","plan_step_id":"step_1","text":"Tell a joke"}]}"#;
     let output = codex_protocol::weave::parse_weave_relay_output(payload).expect("output");
@@ -4089,4 +4103,47 @@ async fn weave_relay_rejects_missing_expects_reply() {
         .validate_relay_actions_scope(&actions, &targets)
         .expect_err("expected expects_reply validation error");
     assert!(err.contains("expects_reply"));
+}
+
+#[tokio::test]
+async fn weave_relay_rejects_control_args_for_non_review() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let agents = vec![WeaveAgent {
+        id: "agent-a".to_string(),
+        name: None,
+    }];
+    chat.weave_agents = Some(agents.clone());
+    let targets =
+        WeaveRelayTargets::new(chat.weave_agent_id.clone(), new_weave_relay_id(), &agents);
+    let actions = vec![WeaveRelayAction::Control {
+        dst: "agent-a".to_string(),
+        command: WeaveRelayCommand::New,
+        plan_step_id: "step_1".to_string(),
+        args: Some("ignored".to_string()),
+    }];
+    let err = chat
+        .validate_relay_actions_scope(&actions, &targets)
+        .expect_err("expected control args validation error");
+    assert!(err.contains("control args"));
+}
+
+#[tokio::test]
+async fn weave_relay_accepts_review_args() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let agents = vec![WeaveAgent {
+        id: "agent-a".to_string(),
+        name: None,
+    }];
+    chat.weave_agents = Some(agents.clone());
+    let targets =
+        WeaveRelayTargets::new(chat.weave_agent_id.clone(), new_weave_relay_id(), &agents);
+    let actions = vec![WeaveRelayAction::Control {
+        dst: "agent-a".to_string(),
+        command: WeaveRelayCommand::Review,
+        plan_step_id: "step_1".to_string(),
+        args: Some("focus on error handling".to_string()),
+    }];
+    chat
+        .validate_relay_actions_scope(&actions, &targets)
+        .expect("expected review args to be valid");
 }

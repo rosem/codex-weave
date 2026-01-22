@@ -30,6 +30,9 @@ pub enum WeaveRelayAction {
         #[serde(default)]
         plan_step_id: String,
         command: WeaveRelayCommand,
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        args: Option<String>,
     },
 }
 

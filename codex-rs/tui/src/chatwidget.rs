@@ -3752,6 +3752,14 @@ impl ChatWidget {
                     );
                 }
             }
+            if let WeaveRelayAction::Control { command, args, .. } = action {
+                let args = args.as_deref().map(str::trim).filter(|arg| !arg.is_empty());
+                if args.is_some() && !matches!(command, WeaveRelayCommand::Review) {
+                    return Err(
+                        "Weave relay control args are only supported for /review.".to_string(),
+                    );
+                }
+            }
             let resolved =
                 resolve_weave_relay_targets(agents, std::slice::from_ref(&dst.to_string()));
             if resolved.is_empty() {
@@ -3799,6 +3807,7 @@ impl ChatWidget {
                     dst,
                     command,
                     plan_step_id,
+                    args,
                 } => {
                     let plan_step_id = plan_step_id.trim();
                     let dst = dst.trim().to_string();
@@ -3820,15 +3829,22 @@ impl ChatWidget {
                         handled = true;
                         continue;
                     }
-                    let tool = weave_tool_from_relay_command(command);
-                    let (command, label) = weave_control_action_parts(&tool);
+                    let tool = weave_tool_from_relay_command(command, args.as_deref());
+                    let (command_name, label) = weave_control_action_parts(&tool);
+                    let tool_args = match &tool {
+                        WeaveTool::Review { instructions } => instructions.as_deref(),
+                        _ => None,
+                    };
                     for agent in &resolved {
-                        relay_actions.push(json!({
-                            "type": "control",
-                            "dst": agent.id.as_str(),
-                            "plan_step_id": plan_step_id,
-                            "command": command,
-                        }));
+                        let mut payload = serde_json::Map::new();
+                        payload.insert("type".to_string(), json!("control"));
+                        payload.insert("dst".to_string(), json!(agent.id.as_str()));
+                        payload.insert("plan_step_id".to_string(), json!(plan_step_id));
+                        payload.insert("command".to_string(), json!(command_name));
+                        if let Some(tool_args) = tool_args {
+                            payload.insert("args".to_string(), json!(tool_args));
+                        }
+                        relay_actions.push(Value::Object(payload));
                     }
                     let targets_log = resolved
                         .iter()
@@ -3878,14 +3894,21 @@ impl ChatWidget {
                     let (control_tools, cleaned_text) =
                         extract_weave_relay_control_tokens(cleaned_text);
                     for tool in control_tools {
-                        let (command, label) = weave_control_action_parts(&tool);
+                        let (command_name, label) = weave_control_action_parts(&tool);
+                        let tool_args = match &tool {
+                            WeaveTool::Review { instructions } => instructions.as_deref(),
+                            _ => None,
+                        };
                         for agent in &resolved {
-                            relay_actions.push(json!({
-                                "type": "control",
-                                "dst": agent.id.as_str(),
-                                "plan_step_id": plan_step_id,
-                                "command": command,
-                            }));
+                            let mut payload = serde_json::Map::new();
+                            payload.insert("type".to_string(), json!("control"));
+                            payload.insert("dst".to_string(), json!(agent.id.as_str()));
+                            payload.insert("plan_step_id".to_string(), json!(plan_step_id));
+                            payload.insert("command".to_string(), json!(command_name));
+                            if let Some(tool_args) = tool_args {
+                                payload.insert("args".to_string(), json!(tool_args));
+                            }
+                            relay_actions.push(Value::Object(payload));
                         }
                         let targets_log = resolved
                             .iter()
@@ -8690,12 +8713,15 @@ struct WeaveControlAction {
     tool: WeaveTool,
 }
 
-fn weave_tool_from_relay_command(command: WeaveRelayCommand) -> WeaveTool {
+fn weave_tool_from_relay_command(command: WeaveRelayCommand, args: Option<&str>) -> WeaveTool {
+    let args = args.map(str::trim).filter(|value| !value.is_empty());
     match command {
         WeaveRelayCommand::New => WeaveTool::NewSession,
         WeaveRelayCommand::Compact => WeaveTool::Compact,
         WeaveRelayCommand::Interrupt => WeaveTool::Interrupt,
-        WeaveRelayCommand::Review => WeaveTool::Review { instructions: None },
+        WeaveRelayCommand::Review => WeaveTool::Review {
+            instructions: args.map(ToString::to_string),
+        },
     }
 }
 
@@ -8849,7 +8875,7 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], wants_plan: bool) -> String 
             .to_string(),
     );
     lines.push(
-        "If asked to call /new, /interrupt, /compact, or /review, send a control action instead of describing it."
+        "If asked to call /new, /interrupt, or /compact, send a control action instead of describing it."
             .to_string(),
     );
     lines.push(
@@ -8947,11 +8973,19 @@ fn extract_weave_relay_control_tokens(text: &str) -> (Vec<WeaveTool>, String) {
     let mut lines = Vec::new();
     for line in text.lines() {
         let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("/review") {
+            if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+                let instructions = rest.trim();
+                let instructions =
+                    (!instructions.is_empty()).then_some(instructions.to_string());
+                tools.push(WeaveTool::Review { instructions });
+                continue;
+            }
+        }
         match trimmed {
             "/new" => tools.push(WeaveTool::NewSession),
             "/compact" => tools.push(WeaveTool::Compact),
             "/interrupt" => tools.push(WeaveTool::Interrupt),
-            "/review" => tools.push(WeaveTool::Review { instructions: None }),
             _ => lines.push(line.to_string()),
         }
     }
