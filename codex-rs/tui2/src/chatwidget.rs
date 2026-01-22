@@ -874,12 +874,7 @@ fn format_weave_prompt(ctx: WeavePromptContext<'_>) -> String {
             lines.push(format!("Weave task targets: {targets}"));
             if let Some(pending) = pending_replies {
                 lines.push(format!("Weave task pending replies: {pending}"));
-                if pending == "none" {
-                    lines.push(
-                        "If you have no actions to send, respond with relay_actions and an empty actions array to wait."
-                            .to_string(),
-                    );
-                } else {
+                if pending != "none" {
                     lines.push(
                         "Wait for pending replies from the same target before follow-ups to that target unless the user says otherwise."
                             .to_string(),
@@ -1109,7 +1104,27 @@ impl ChatWidget {
         self.weave_target_states.clear();
         self.weave_relay_buffer.clear();
         if !self.queued_user_messages.is_empty() {
-            self.queued_user_messages.clear();
+            if let Some(context) = self.pending_weave_new_session_context.as_ref() {
+                let mut retained = VecDeque::new();
+                for mut message in self.queued_user_messages.drain(..) {
+                    let UserMessageSource::Weave(weave) = &mut message.source else {
+                        continue;
+                    };
+                    if weave.conversation_owner != context.conversation_owner
+                        || weave.conversation_id != context.previous_conversation_id
+                    {
+                        continue;
+                    }
+                    weave.conversation_id = context.conversation_id.clone();
+                    weave.task_id = Some(context.task_id.clone());
+                    weave.reply_target.conversation_id = context.conversation_id.clone();
+                    weave.reply_target.task_id = Some(context.task_id.clone());
+                    retained.push_back(message);
+                }
+                self.queued_user_messages = retained;
+            } else {
+                self.queued_user_messages.clear();
+            }
             self.refresh_queued_user_messages();
         }
         self.app_event_tx.send(AppEvent::NewSession);
@@ -3848,6 +3863,8 @@ impl ChatWidget {
             self.refresh_weave_session_label();
             self.clear_pending_weave_actions_for_targets(targets);
         }
+        self.pending_weave_relay = None;
+        self.weave_relay_buffer.clear();
         self.pending_weave_plan = false;
         if let Some(summary) = summary {
             self.add_agent_message(&summary);
@@ -8513,10 +8530,6 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], wants_plan: bool) -> String 
     );
     lines.push(
         "Use type \"relay_actions\" with an `actions` array to send messages or control commands."
-            .to_string(),
-    );
-    lines.push(
-        "If you have no actions to send, respond with relay_actions and an empty actions array to wait for replies."
             .to_string(),
     );
     lines.push("Action types: \"message\", \"control\".".to_string());
