@@ -4156,7 +4156,7 @@ impl ChatWidget {
         if self.relay_has_pending_replies(&active) {
             return;
         }
-        self.finish_weave_task(&active, None);
+        // Relay completion is driven by relay.done; keep state until it arrives.
     }
 
     fn interrupt_weave_task(
@@ -4287,7 +4287,6 @@ impl ChatWidget {
     fn drop_weave_relay_targets(&mut self, target_ids: Vec<String>) -> bool {
         let mut removed = Vec::new();
         let should_finish;
-        let mut active_snapshot = None;
         {
             let Some(active) = self.active_weave_relay.as_mut() else {
                 return false;
@@ -4301,9 +4300,6 @@ impl ChatWidget {
                 return false;
             }
             should_finish = active.target_ids.is_empty();
-            if should_finish {
-                active_snapshot = Some(active.clone());
-            }
         }
         for target_id in &removed {
             if let Some(state) = self.weave_target_states.get_mut(target_id) {
@@ -4316,9 +4312,7 @@ impl ChatWidget {
         if should_finish {
             self.pending_weave_relay = None;
             self.weave_relay_buffer.clear();
-            if let Some(active_snapshot) = active_snapshot {
-                self.finish_weave_task(&active_snapshot, None);
-            }
+            self.pending_weave_plan = false;
         }
         true
     }
@@ -6587,16 +6581,23 @@ impl ChatWidget {
     }
 
     pub(crate) fn on_weave_relay_submit_failed(&mut self, relay_id: &str, message: &str) {
-        if self
-            .active_weave_relay
-            .as_ref()
-            .is_none_or(|relay| relay.relay_id != relay_id)
-        {
+        let Some(active) = self.active_weave_relay.clone() else {
+            return;
+        };
+        if active.relay_id != relay_id {
             return;
         }
         self.add_to_history(history_cell::new_error_event(format!(
             "Failed to send Weave relay actions: {message}"
         )));
+        self.active_weave_relay = None;
+        self.active_weave_plan = None;
+        self.pending_weave_plan = false;
+        self.pending_weave_relay = None;
+        self.weave_relay_buffer.clear();
+        self.clear_pending_weave_actions_for_targets(&active);
+        self.refresh_weave_session_label();
+        self.maybe_send_next_queued_input();
     }
 
     fn handle_weave_task_update(&mut self, sender_id: &str, update: WeaveTaskUpdate) {
