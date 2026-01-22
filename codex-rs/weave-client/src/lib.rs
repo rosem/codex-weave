@@ -235,6 +235,8 @@ mod platform {
     const COORD_SOCKET: &str = "coord.sock";
     const SESSIONS_DIR: &str = "sessions";
     const REQUEST_SRC: &str = "codex-cli";
+    const OUTGOING_CHANNEL_CAPACITY: usize = 128;
+    const INCOMING_CHANNEL_CAPACITY: usize = 256;
 
     #[derive(Debug, Serialize, Deserialize)]
     struct WeaveErrorDetail {
@@ -319,8 +321,8 @@ mod platform {
         agent_id: String,
         agent_name: Arc<RwLock<String>>,
         seq: Arc<AtomicU64>,
-        outgoing_tx: mpsc::UnboundedSender<WeaveOutgoingRequest>,
-        incoming_rx: Option<mpsc::UnboundedReceiver<WeaveIncomingMessage>>,
+        outgoing_tx: mpsc::Sender<WeaveOutgoingRequest>,
+        incoming_rx: Option<mpsc::Receiver<WeaveIncomingMessage>>,
         shutdown_tx: Option<oneshot::Sender<()>>,
     }
 
@@ -353,9 +355,7 @@ mod platform {
             }
         }
 
-        pub fn take_incoming_rx(
-            &mut self,
-        ) -> Option<mpsc::UnboundedReceiver<WeaveIncomingMessage>> {
+        pub fn take_incoming_rx(&mut self) -> Option<mpsc::Receiver<WeaveIncomingMessage>> {
             self.incoming_rx.take()
         }
 
@@ -491,8 +491,8 @@ mod platform {
             .map_err(|err| format!("Failed to connect to Weave coordinator: {err}"))?;
         let (read_half, write_half) = tokio::io::split(stream);
         let reader = BufReader::new(read_half);
-        let (incoming_tx, incoming_rx) = mpsc::unbounded_channel();
-        let (outgoing_tx, outgoing_rx) = mpsc::unbounded_channel();
+        let (incoming_tx, incoming_rx) = mpsc::channel(INCOMING_CHANNEL_CAPACITY);
+        let (outgoing_tx, outgoing_rx) = mpsc::channel(OUTGOING_CHANNEL_CAPACITY);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let seq = Arc::new(AtomicU64::new(0));
         let agent_name = name
@@ -528,6 +528,7 @@ mod platform {
                 envelope: request,
                 response_tx,
             })
+            .await
             .map_err(|_| "Weave agent connection closed".to_string())?;
         let response = response_rx
             .await
@@ -876,8 +877,8 @@ mod platform {
         session_id: String,
         agent_id: String,
         agent_name: Arc<RwLock<String>>,
-        outgoing_rx: mpsc::UnboundedReceiver<WeaveOutgoingRequest>,
-        incoming_tx: mpsc::UnboundedSender<WeaveIncomingMessage>,
+        outgoing_rx: mpsc::Receiver<WeaveOutgoingRequest>,
+        incoming_tx: mpsc::Sender<WeaveIncomingMessage>,
     }
 
     struct IncomingMessageContext {
@@ -893,7 +894,7 @@ mod platform {
         session_id: String,
         agent_id: String,
         seq: Arc<AtomicU64>,
-        outgoing_tx: mpsc::UnboundedSender<WeaveOutgoingRequest>,
+        outgoing_tx: mpsc::Sender<WeaveOutgoingRequest>,
     }
 
     impl WeaveAgentSender {
@@ -1013,6 +1014,7 @@ mod platform {
                     envelope: request,
                     response_tx,
                 })
+                .await
                 .map_err(|_| "Weave agent connection closed".to_string())?;
             response_rx
                 .await
@@ -1079,20 +1081,26 @@ mod platform {
                                 .read()
                                 .map(|guard| guard.clone())
                                 .unwrap_or_else(|_| agent_id.clone());
-                            if let Some(ack) = build_message_ack_request(
+                            let ack = build_message_ack_request(
                                 &response,
                                 &agent_id,
                                 current_agent_name.as_str(),
                                 &session_id,
-                            ) && let Err(err) = send_envelope(&mut writer, &ack).await {
-                                    warn!(error = %err, "Failed to acknowledge Weave message");
-                                }
-                            for message in build_incoming_messages(
+                            );
+                            let messages = build_incoming_messages(
                                 &response,
                                 &agent_id,
                                 current_agent_name.as_str(),
-                            ) {
-                                let _ = incoming_tx.send(message);
+                            );
+                            for message in messages {
+                                if incoming_tx.send(message).await.is_err() {
+                                    return;
+                                }
+                            }
+                            if let Some(ack) = ack
+                                && let Err(err) = send_envelope(&mut writer, &ack).await
+                            {
+                                warn!(error = %err, "Failed to acknowledge Weave message");
                             }
                         }
                         Err(_) => break,
@@ -2047,9 +2055,7 @@ mod platform {
 
         pub fn shutdown(&mut self) {}
 
-        pub fn take_incoming_rx(
-            &mut self,
-        ) -> Option<mpsc::UnboundedReceiver<WeaveIncomingMessage>> {
+        pub fn take_incoming_rx(&mut self) -> Option<mpsc::Receiver<WeaveIncomingMessage>> {
             None
         }
     }
