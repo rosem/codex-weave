@@ -34,7 +34,9 @@ impl WeaveRelayDoneRequest {
 
     pub fn summary(&self) -> Option<&str> {
         match self {
-            Self::Summary { summary } => summary.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            Self::Summary { summary } => {
+                summary.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            }
             _ => None,
         }
     }

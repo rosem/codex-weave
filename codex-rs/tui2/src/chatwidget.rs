@@ -1173,6 +1173,7 @@ impl ChatWidget {
         self.apply_session_info_cell(session_info_cell);
         self.maybe_send_pending_weave_new_session_result();
         self.flush_pending_weave_action_messages();
+        self.maybe_send_next_queued_input();
         if let Some(messages) = initial_messages {
             self.replay_initial_messages(messages);
         }
@@ -3475,7 +3476,9 @@ impl ChatWidget {
         self.weave_relay_buffer.clear();
         self.pending_weave_relay = None;
 
-        let done_requested = done.map(WeaveRelayDoneRequest::is_requested).unwrap_or(false);
+        let done_requested = done
+            .map(WeaveRelayDoneRequest::is_requested)
+            .unwrap_or(false);
         let done_summary = done
             .and_then(WeaveRelayDoneRequest::summary)
             .map(ToString::to_string);
@@ -3510,8 +3513,12 @@ impl ChatWidget {
         };
         for action in actions {
             let (dst, plan_step_id) = match action {
-                WeaveRelayAction::Message { dst, plan_step_id, .. } => (dst, plan_step_id),
-                WeaveRelayAction::Control { dst, plan_step_id, .. } => (dst, plan_step_id),
+                WeaveRelayAction::Message {
+                    dst, plan_step_id, ..
+                } => (dst, plan_step_id),
+                WeaveRelayAction::Control {
+                    dst, plan_step_id, ..
+                } => (dst, plan_step_id),
             };
             let dst = dst.trim();
             if dst.is_empty() {
@@ -3521,18 +3528,16 @@ impl ChatWidget {
             if plan_step_id.is_empty() {
                 return Err("Weave relay action requires plan_step_id.".to_string());
             }
-            if let WeaveRelayAction::Message { expects_reply, .. } = action {
-                if expects_reply.is_none() {
-                    return Err(
-                        "Weave relay message requires expects_reply (true|false).".to_string(),
-                    );
-                }
+            if let WeaveRelayAction::Message { expects_reply, .. } = action
+                && expects_reply.is_none()
+            {
+                return Err("Weave relay message requires expects_reply (true|false).".to_string());
             }
             if let WeaveRelayAction::Control { command, args, .. } = action {
                 let args = args.as_deref().map(str::trim).filter(|arg| !arg.is_empty());
                 if args.is_some() && !matches!(command, WeaveRelayCommand::Review) {
                     return Err(
-                        "Weave relay control args are only supported for /review.".to_string(),
+                        "Weave relay control args are only supported for /review.".to_string()
                     );
                 }
             }
@@ -3795,7 +3800,7 @@ impl ChatWidget {
             .filter(|value| !value.is_empty())
             .map(ToString::to_string);
         let mut done_payload = serde_json::Map::new();
-        done_payload.insert("relay_id".to_string(), json!(relay_id.clone()));
+        done_payload.insert("relay_id".to_string(), json!(relay_id));
         if let Some(summary) = summary {
             done_payload.insert("summary".to_string(), json!(summary));
         }
@@ -3964,9 +3969,7 @@ impl ChatWidget {
         let Some(active) = self.active_weave_relay.clone() else {
             return;
         };
-        if self.relay_has_pending_replies(&active) {
-            return;
-        }
+        if self.relay_has_pending_replies(&active) {}
         // Relay completion is driven by relay.done; keep state until it arrives.
     }
 
@@ -4008,10 +4011,8 @@ impl ChatWidget {
             let mut removed_steps = Vec::new();
             state.pending_actions.retain(|_, pending| {
                 let keep = !pending.expects_reply;
-                if !keep {
-                    if let Some(plan_step_id) = pending.plan_step_id.as_deref() {
-                        removed_steps.push(plan_step_id.to_string());
-                    }
+                if !keep && let Some(plan_step_id) = pending.plan_step_id.as_deref() {
+                    removed_steps.push(plan_step_id.to_string());
                 }
                 keep
             });
@@ -4434,7 +4435,7 @@ impl ChatWidget {
                 Vec::new()
             };
             items.push(UserInput::Text {
-                text: input_text.clone(),
+                text: input_text,
                 text_elements: input_text_elements,
             });
         }
@@ -6470,6 +6471,9 @@ impl ChatWidget {
             .as_deref()
             .is_some_and(|group_id| group_id == context.group_id.as_str());
         if is_group_match {
+            if message.defer_until_ready {
+                return true;
+            }
             return matches!(
                 (context.action_index, message.action_index),
                 (Some(context_index), Some(message_index)) if message_index > context_index
@@ -8586,13 +8590,11 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], wants_plan: bool) -> String 
         lines.push(
             "- Steps must be ordered, atomic, and executable; one round = one step.".to_string(),
         );
+        lines.push("- Use step_1, step_2, ... exactly matching plan.steps order.".to_string());
         lines.push(
-            "- Use step_1, step_2, ... exactly matching plan.steps order.".to_string(),
+            "- Do not use step_2 until step_1 is complete; never reuse a plan_step_id.".to_string(),
         );
-        lines.push("- Do not use step_2 until step_1 is complete; never reuse a plan_step_id.".to_string());
-        lines.push(
-            "- If a step waits on a reply, say so in the step text.".to_string(),
-        );
+        lines.push("- If a step waits on a reply, say so in the step text.".to_string());
         lines.push(
             "- If a step sends expects_reply: true, include (wait for reply) in the step text."
                 .to_string(),
@@ -8616,7 +8618,10 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], wants_plan: bool) -> String 
     );
     lines.push("Action types: \"message\", \"control\".".to_string());
     lines.push("Provide a `command` for control actions.".to_string());
-    lines.push("Only /review supports args; include args as a string field on the control action.".to_string());
+    lines.push(
+        "Only /review supports args; include args as a string field on the control action."
+            .to_string(),
+    );
     lines.push(
         "For message actions, include expects_reply: true when a reply is required, false otherwise."
             .to_string(),
@@ -8732,14 +8737,13 @@ fn extract_weave_relay_control_tokens(text: &str) -> (Vec<WeaveTool>, String) {
     let mut lines = Vec::new();
     for line in text.lines() {
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("/review") {
-            if rest.is_empty() || rest.starts_with(char::is_whitespace) {
-                let instructions = rest.trim();
-                let instructions =
-                    (!instructions.is_empty()).then_some(instructions.to_string());
-                tools.push(WeaveTool::Review { instructions });
-                continue;
-            }
+        if let Some(rest) = trimmed.strip_prefix("/review")
+            && (rest.is_empty() || rest.starts_with(char::is_whitespace))
+        {
+            let instructions = rest.trim();
+            let instructions = (!instructions.is_empty()).then_some(instructions.to_string());
+            tools.push(WeaveTool::Review { instructions });
+            continue;
         }
         match trimmed {
             "/new" => tools.push(WeaveTool::NewSession),

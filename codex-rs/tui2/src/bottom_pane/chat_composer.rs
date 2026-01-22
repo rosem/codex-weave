@@ -6456,7 +6456,7 @@ mod tests {
         }]));
 
         let text = "#agent-b /".to_string();
-        composer.set_text_content(text.clone());
+        composer.set_text_content(text.clone(), Vec::new(), Vec::new());
         composer.textarea.set_cursor(text.len());
         composer.sync_popups();
 
@@ -6484,7 +6484,7 @@ mod tests {
         }]));
 
         let text = "#agent-b /".to_string();
-        composer.set_text_content(text.clone());
+        composer.set_text_content(text.clone(), Vec::new(), Vec::new());
         composer.textarea.set_cursor(text.len());
         composer.sync_popups();
 

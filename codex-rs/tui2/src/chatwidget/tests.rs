@@ -66,10 +66,10 @@ use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::plan_tool::PlanItemArg;
 use codex_protocol::plan_tool::StepStatus;
 use codex_protocol::plan_tool::UpdatePlanArgs;
-use codex_protocol::weave::WeaveRelayDoneRequest;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::user_input::TextElement;
 use codex_protocol::user_input::UserInput;
+use codex_protocol::weave::WeaveRelayDoneRequest;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -349,6 +349,7 @@ async fn interrupted_turn_restores_queued_messages_with_images_and_elements() {
             path: first_images[0].clone(),
         }],
         text_elements: first_elements,
+        source: UserMessageSource::Local,
     });
     chat.queued_user_messages.push_back(UserMessage {
         text: second_text,
@@ -357,6 +358,7 @@ async fn interrupted_turn_restores_queued_messages_with_images_and_elements() {
             path: second_images[0].clone(),
         }],
         text_elements: second_elements,
+        source: UserMessageSource::Local,
     });
     chat.refresh_queued_user_messages();
 
@@ -436,6 +438,7 @@ async fn remap_placeholders_uses_attachment_labels() {
         text,
         text_elements: elements,
         local_images: attachments,
+        source: UserMessageSource::Local,
     };
     let mut next_label = 3usize;
     let remapped = remap_placeholders_for_message(message, &mut next_label);
@@ -496,6 +499,7 @@ async fn remap_placeholders_uses_byte_ranges_when_placeholder_missing() {
         text,
         text_elements: elements,
         local_images: attachments,
+        source: UserMessageSource::Local,
     };
     let mut next_label = 3usize;
     let remapped = remap_placeholders_for_message(message, &mut next_label);
@@ -4166,7 +4170,6 @@ async fn weave_relay_accepts_review_args() {
         plan_step_id: "step_1".to_string(),
         args: Some("focus on error handling".to_string()),
     }];
-    chat
-        .validate_relay_actions_scope(&actions, &targets)
+    chat.validate_relay_actions_scope(&actions, &targets)
         .expect("expected review args to be valid");
 }

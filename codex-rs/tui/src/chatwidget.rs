@@ -1250,6 +1250,7 @@ impl ChatWidget {
         self.apply_session_info_cell(session_info_cell);
         self.maybe_send_pending_weave_new_session_result();
         self.flush_pending_weave_action_messages();
+        self.maybe_send_next_queued_input();
         if let Some(messages) = initial_messages {
             self.replay_initial_messages(messages);
         }
@@ -3719,7 +3720,9 @@ impl ChatWidget {
         self.weave_relay_buffer.clear();
         self.pending_weave_relay = None;
 
-        let done_requested = done.map(WeaveRelayDoneRequest::is_requested).unwrap_or(false);
+        let done_requested = done
+            .map(WeaveRelayDoneRequest::is_requested)
+            .unwrap_or(false);
         let done_summary = done
             .and_then(WeaveRelayDoneRequest::summary)
             .map(ToString::to_string);
@@ -3754,8 +3757,12 @@ impl ChatWidget {
         };
         for action in actions {
             let (dst, plan_step_id) = match action {
-                WeaveRelayAction::Message { dst, plan_step_id, .. } => (dst, plan_step_id),
-                WeaveRelayAction::Control { dst, plan_step_id, .. } => (dst, plan_step_id),
+                WeaveRelayAction::Message {
+                    dst, plan_step_id, ..
+                } => (dst, plan_step_id),
+                WeaveRelayAction::Control {
+                    dst, plan_step_id, ..
+                } => (dst, plan_step_id),
             };
             let dst = dst.trim();
             if dst.is_empty() {
@@ -3768,7 +3775,7 @@ impl ChatWidget {
             if let WeaveRelayAction::Message { expects_reply, .. } = action {
                 if expects_reply.is_none() {
                     return Err(
-                        "Weave relay message requires expects_reply (true|false).".to_string(),
+                        "Weave relay message requires expects_reply (true|false).".to_string()
                     );
                 }
             }
@@ -3776,7 +3783,7 @@ impl ChatWidget {
                 let args = args.as_deref().map(str::trim).filter(|arg| !arg.is_empty());
                 if args.is_some() && !matches!(command, WeaveRelayCommand::Review) {
                     return Err(
-                        "Weave relay control args are only supported for /review.".to_string(),
+                        "Weave relay control args are only supported for /review.".to_string()
                     );
                 }
             }
@@ -6904,6 +6911,9 @@ impl ChatWidget {
             .as_deref()
             .is_some_and(|group_id| group_id == context.group_id.as_str());
         if is_group_match {
+            if message.defer_until_ready {
+                return true;
+            }
             return matches!(
                 (context.action_index, message.action_index),
                 (Some(context_index), Some(message_index)) if message_index > context_index
@@ -8892,13 +8902,11 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], wants_plan: bool) -> String 
         lines.push(
             "- Steps must be ordered, atomic, and executable; one round = one step.".to_string(),
         );
+        lines.push("- Use step_1, step_2, ... exactly matching plan.steps order.".to_string());
         lines.push(
-            "- Use step_1, step_2, ... exactly matching plan.steps order.".to_string(),
+            "- Do not use step_2 until step_1 is complete; never reuse a plan_step_id.".to_string(),
         );
-        lines.push("- Do not use step_2 until step_1 is complete; never reuse a plan_step_id.".to_string());
-        lines.push(
-            "- If a step waits on a reply, say so in the step text.".to_string(),
-        );
+        lines.push("- If a step waits on a reply, say so in the step text.".to_string());
         lines.push(
             "- If a step sends expects_reply: true, include (wait for reply) in the step text."
                 .to_string(),
@@ -8922,7 +8930,10 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], wants_plan: bool) -> String 
     );
     lines.push("Action types: \"message\", \"control\".".to_string());
     lines.push("Provide a `command` for control actions.".to_string());
-    lines.push("Only /review supports args; include args as a string field on the control action.".to_string());
+    lines.push(
+        "Only /review supports args; include args as a string field on the control action."
+            .to_string(),
+    );
     lines.push(
         "For message actions, include expects_reply: true when a reply is required, false otherwise."
             .to_string(),
@@ -9041,8 +9052,7 @@ fn extract_weave_relay_control_tokens(text: &str) -> (Vec<WeaveTool>, String) {
         if let Some(rest) = trimmed.strip_prefix("/review") {
             if rest.is_empty() || rest.starts_with(char::is_whitespace) {
                 let instructions = rest.trim();
-                let instructions =
-                    (!instructions.is_empty()).then_some(instructions.to_string());
+                let instructions = (!instructions.is_empty()).then_some(instructions.to_string());
                 tools.push(WeaveTool::Review { instructions });
                 continue;
             }

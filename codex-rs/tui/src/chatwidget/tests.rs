@@ -68,10 +68,10 @@ use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::plan_tool::PlanItemArg;
 use codex_protocol::plan_tool::StepStatus;
 use codex_protocol::plan_tool::UpdatePlanArgs;
-use codex_protocol::weave::WeaveRelayDoneRequest;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::user_input::TextElement;
 use codex_protocol::user_input::UserInput;
+use codex_protocol::weave::WeaveRelayDoneRequest;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -4680,8 +4680,7 @@ async fn weave_relay_accepts_review_args() {
         plan_step_id: "step_1".to_string(),
         args: Some("focus on error handling".to_string()),
     }];
-    chat
-        .validate_relay_actions_scope(&actions, &targets)
+    chat.validate_relay_actions_scope(&actions, &targets)
         .expect("expected review args to be valid");
 }
 
