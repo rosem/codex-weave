@@ -3751,8 +3751,11 @@ impl ChatWidget {
         let sender_name = self.weave_agent_name.clone();
         let sender_is_owner = targets.owner_id == self.weave_agent_id;
         let relay_id = targets.relay_id.clone();
+        let mut relay_targets = targets.target_ids.iter().cloned().collect::<Vec<_>>();
+        relay_targets.sort();
         let payload = json!({
             "relay_id": relay_id,
+            "targets": relay_targets,
             "actions": relay_actions,
         });
         tokio::spawn(async move {
@@ -8576,6 +8579,10 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], wants_plan: bool) -> String 
     let mut lines = Vec::new();
     lines.push("Weave relay:".to_string());
     lines.push(format!("Targets: {target_list}"));
+    lines.push(
+        "Targets are fixed for this relay. You may send actions to any listed target later; to add a new target, start a new relay."
+            .to_string(),
+    );
     lines.push("Messages with #mentions indicate a weave task.".to_string());
     if wants_plan {
         lines.push(
