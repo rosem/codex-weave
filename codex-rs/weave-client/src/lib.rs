@@ -151,6 +151,8 @@ pub struct WeaveRelayAcceptedAction {
     pub action_index: usize,
     #[serde(rename = "type")]
     pub action_type: String,
+    #[serde(rename = "step_id")]
+    pub step_id: String,
     #[serde(default)]
     pub reply_policy: Option<String>,
     #[serde(default)]

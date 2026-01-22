@@ -434,7 +434,7 @@ pub(crate) struct ChatWidget {
     weave_agents: Option<Vec<WeaveAgent>>,
     pending_weave_relay: Option<WeaveRelayTargets>,
     active_weave_relay: Option<WeaveRelayTargets>,
-    active_weave_plan: Option<WeaveRelayPlan>,
+    active_weave_plan: Option<WeavePlanState>,
     pending_weave_plan: bool,
     weave_relay_buffer: String,
     relay_output_consumed: bool,
@@ -543,6 +543,22 @@ struct WeaveRelayTargetState {
 struct WeavePendingAction {
     group_id: String,
     expects_reply: bool,
+    step_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct WeavePlanStepState {
+    id: String,
+    text: String,
+    status: StepStatus,
+    assigned_actions: usize,
+    pending_actions: usize,
+}
+
+#[derive(Clone, Debug)]
+struct WeavePlanState {
+    steps: Vec<WeavePlanStepState>,
+    note: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -3343,9 +3359,20 @@ impl ChatWidget {
         let mut relay_actions: Vec<Value> = Vec::new();
         let mut outbound_logs: Vec<(String, Vec<(String, bool)>)> = Vec::new();
 
+        if let Some(plan) = actions.iter().find_map(|action| match action {
+            WeaveRelayAction::Message {
+                plan: Some(plan), ..
+            } => Some(plan.clone()),
+            _ => None,
+        }) {
+            self.apply_weave_plan(plan);
+        }
+
         for action in actions.into_iter() {
             match action {
                 WeaveRelayAction::Control { dst, command } => {
+                    let step_id =
+                        self.current_weave_plan_step_id().unwrap_or_else(new_weave_action_id);
                     let dst = dst.trim().to_string();
                     if dst.is_empty() {
                         self.add_to_history(history_cell::new_error_event(
@@ -3371,6 +3398,7 @@ impl ChatWidget {
                         relay_actions.push(json!({
                             "type": "control",
                             "dst": agent.id.as_str(),
+                            "step_id": step_id.as_str(),
                             "command": command,
                         }));
                     }
@@ -3390,6 +3418,8 @@ impl ChatWidget {
                     if let Some(plan) = plan {
                         self.apply_weave_plan(plan);
                     }
+                    let step_id =
+                        self.current_weave_plan_step_id().unwrap_or_else(new_weave_action_id);
                     let dst = dst.trim().to_string();
                     if dst.is_empty() {
                         self.add_to_history(history_cell::new_error_event(
@@ -3426,6 +3456,7 @@ impl ChatWidget {
                             relay_actions.push(json!({
                                 "type": "control",
                                 "dst": agent.id.as_str(),
+                                "step_id": step_id.as_str(),
                                 "command": command,
                             }));
                         }
@@ -3454,6 +3485,7 @@ impl ChatWidget {
                         let mut payload = serde_json::Map::new();
                         payload.insert("type".to_string(), json!("message"));
                         payload.insert("dst".to_string(), json!(agent.id.as_str()));
+                        payload.insert("step_id".to_string(), json!(step_id.as_str()));
                         payload.insert("text".to_string(), json!(cleaned_text));
                         payload.insert("reply_policy".to_string(), json!(relay_reply_policy));
                         if let Some(reply_to_action_id) = reply_to_action_id {
@@ -3564,35 +3596,113 @@ impl ChatWidget {
         if steps.is_empty() {
             return;
         }
-        let plan = WeaveRelayPlan {
-            steps,
-            note: plan
-                .note
-                .as_deref()
-                .map(str::trim)
-                .filter(|note| !note.is_empty())
-                .map(ToString::to_string),
-        };
-        let plan_items = plan
-            .steps
-            .iter()
+        let note = plan
+            .note
+            .as_deref()
+            .map(str::trim)
+            .filter(|note| !note.is_empty())
+            .map(ToString::to_string);
+        let steps = steps
+            .into_iter()
             .enumerate()
-            .map(|(idx, step)| PlanItemArg {
-                step: step.clone(),
+            .map(|(idx, step)| WeavePlanStepState {
+                id: format!("step_{}", idx + 1),
+                text: step,
                 status: if idx == 0 {
                     StepStatus::InProgress
                 } else {
                     StepStatus::Pending
                 },
+                assigned_actions: 0,
+                pending_actions: 0,
+            })
+            .collect::<Vec<_>>();
+        let plan = WeavePlanState { steps, note };
+        self.active_weave_plan = Some(plan);
+        self.emit_weave_plan_update();
+        self.pending_weave_plan = false;
+    }
+
+    fn weave_plan_update(plan: &WeavePlanState) -> UpdatePlanArgs {
+        let plan_items = plan
+            .steps
+            .iter()
+            .map(|step| PlanItemArg {
+                step: step.text.clone(),
+                status: step.status.clone(),
             })
             .collect();
-        let update = UpdatePlanArgs {
+        UpdatePlanArgs {
             explanation: plan.note.clone(),
             plan: plan_items,
+        }
+    }
+
+    fn emit_weave_plan_update(&mut self) {
+        let Some(plan) = self.active_weave_plan.as_ref() else {
+            return;
         };
-        self.add_to_history(history_cell::new_plan_update(update));
-        self.active_weave_plan = Some(plan);
-        self.pending_weave_plan = false;
+        self.add_to_history(history_cell::new_plan_update(Self::weave_plan_update(plan)));
+    }
+
+    fn current_weave_plan_step_id(&self) -> Option<String> {
+        let plan = self.active_weave_plan.as_ref()?;
+        if let Some(step) = plan
+            .steps
+            .iter()
+            .find(|step| matches!(step.status, StepStatus::InProgress))
+        {
+            return Some(step.id.clone());
+        }
+        plan.steps
+            .iter()
+            .find(|step| matches!(step.status, StepStatus::Pending))
+            .map(|step| step.id.clone())
+    }
+
+    fn mark_weave_plan_action_started(&mut self, step_id: &str) -> bool {
+        let Some(plan) = self.active_weave_plan.as_mut() else {
+            return false;
+        };
+        let Some(step) = plan.steps.iter_mut().find(|step| step.id == step_id) else {
+            return false;
+        };
+        step.assigned_actions += 1;
+        step.pending_actions += 1;
+        if matches!(step.status, StepStatus::Pending) {
+            step.status = StepStatus::InProgress;
+            return true;
+        }
+        false
+    }
+
+    fn mark_weave_plan_action_completed(&mut self, step_id: &str) -> bool {
+        let Some(plan) = self.active_weave_plan.as_mut() else {
+            return false;
+        };
+        let Some(step_index) = plan.steps.iter().position(|step| step.id == step_id) else {
+            return false;
+        };
+        let step = &mut plan.steps[step_index];
+        if step.pending_actions == 0 {
+            return false;
+        }
+        step.pending_actions = step.pending_actions.saturating_sub(1);
+        if step.pending_actions > 0 || step.assigned_actions == 0 {
+            return false;
+        }
+        if !matches!(step.status, StepStatus::InProgress) {
+            return false;
+        }
+        step.status = StepStatus::Completed;
+        if let Some(next) = plan
+            .steps
+            .iter_mut()
+            .find(|step| matches!(step.status, StepStatus::Pending))
+        {
+            next.status = StepStatus::InProgress;
+        }
+        true
     }
 
     fn finish_weave_task(&mut self, targets: &WeaveRelayTargets, summary: Option<String>) {
@@ -3601,20 +3711,13 @@ impl ChatWidget {
             .as_ref()
             .is_some_and(|relay| relay.matches(targets))
         {
-            if let Some(plan) = self.active_weave_plan.take() {
-                let plan_items = plan
-                    .steps
-                    .into_iter()
-                    .map(|step| PlanItemArg {
-                        step,
-                        status: StepStatus::Completed,
-                    })
-                    .collect();
-                let update = UpdatePlanArgs {
-                    explanation: plan.note,
-                    plan: plan_items,
-                };
-                self.add_to_history(history_cell::new_plan_update(update));
+            if let Some(mut plan) = self.active_weave_plan.take() {
+                for step in &mut plan.steps {
+                    step.status = StepStatus::Completed;
+                }
+                self.add_to_history(history_cell::new_plan_update(
+                    Self::weave_plan_update(&plan),
+                ));
             }
             self.active_weave_relay = None;
             self.refresh_weave_session_label();
@@ -3691,19 +3794,38 @@ impl ChatWidget {
     }
 
     fn clear_pending_weave_reply_expectations_for_agent(&mut self, agent_id: &str) -> bool {
-        let Some(state) = self.weave_target_states.get_mut(agent_id) else {
-            return false;
+        let (removed_steps, changed) = {
+            let Some(state) = self.weave_target_states.get_mut(agent_id) else {
+                return false;
+            };
+            let before = state.pending_actions.len();
+            let mut removed_steps = Vec::new();
+            state.pending_actions.retain(|_, pending| {
+                let keep = !pending.expects_reply;
+                if !keep {
+                    if let Some(step_id) = pending.step_id.as_deref() {
+                        removed_steps.push(step_id.to_string());
+                    }
+                }
+                keep
+            });
+            if let Some(pending_id) = state.pending_new_action_id.clone()
+                && !state.pending_actions.contains_key(&pending_id)
+            {
+                state.pending_new_action_id = None;
+            }
+            (removed_steps, state.pending_actions.len() != before)
         };
-        let before = state.pending_actions.len();
-        state
-            .pending_actions
-            .retain(|_, pending| !pending.expects_reply);
-        if let Some(pending_id) = state.pending_new_action_id.clone()
-            && !state.pending_actions.contains_key(&pending_id)
-        {
-            state.pending_new_action_id = None;
+        let mut plan_changed = false;
+        for step_id in removed_steps {
+            if self.mark_weave_plan_action_completed(step_id.as_str()) {
+                plan_changed = true;
+            }
         }
-        state.pending_actions.len() != before
+        if plan_changed {
+            self.emit_weave_plan_update();
+        }
+        changed
     }
 
     fn clear_weave_reply_state(&mut self, conversation_id: &str, conversation_owner: &str) {
@@ -5767,6 +5889,7 @@ impl ChatWidget {
             self.add_to_history(history_cell::new_error_event(label));
         }
         let mut drop_targets = Vec::new();
+        let mut plan_changed = false;
         for (target_id, target_state) in accepted.targets {
             let state = self
                 .weave_target_states
@@ -5787,11 +5910,16 @@ impl ChatWidget {
             for action in target_state.actions {
                 let expects_reply = action.action_type == "message"
                     && action.reply_policy.as_deref() == Some("sender");
+                let step_id = action.step_id.trim();
+                if !step_id.is_empty() && self.mark_weave_plan_action_started(step_id) {
+                    plan_changed = true;
+                }
                 self.register_pending_weave_action(
                     target_id.as_str(),
                     action.action_id.as_str(),
                     group_id,
                     expects_reply,
+                    Some(action.step_id.clone()),
                 );
                 if action.action_type == "control" {
                     if action.command.as_deref() == Some("new")
@@ -5809,6 +5937,9 @@ impl ChatWidget {
             && self.drop_weave_relay_targets(drop_targets.into_iter().collect())
         {
             self.maybe_send_next_queued_input();
+        }
+        if plan_changed {
+            self.emit_weave_plan_update();
         }
         self.maybe_finish_active_weave_relay();
     }
@@ -5930,6 +6061,7 @@ impl ChatWidget {
         action_id: &str,
         group_id: &str,
         expects_reply: bool,
+        step_id: Option<String>,
     ) {
         let state = self
             .weave_target_states
@@ -5942,6 +6074,7 @@ impl ChatWidget {
             WeavePendingAction {
                 group_id: group_id.to_string(),
                 expects_reply,
+                step_id,
             },
         );
     }
@@ -5950,11 +6083,19 @@ impl ChatWidget {
         let Some(state) = self.weave_target_states.get_mut(agent_id) else {
             return false;
         };
-        let removed = state.pending_actions.remove(action_id).is_some();
-        if removed && state.pending_new_action_id.as_deref() == Some(action_id) {
+        let removed = state.pending_actions.remove(action_id);
+        if removed.is_some() && state.pending_new_action_id.as_deref() == Some(action_id) {
             state.pending_new_action_id = None;
         }
-        removed
+        if let Some(pending) = removed {
+            if let Some(step_id) = pending.step_id.as_deref()
+                && self.mark_weave_plan_action_completed(step_id)
+            {
+                self.emit_weave_plan_update();
+            }
+            return true;
+        }
+        false
     }
 
     fn clear_pending_weave_actions_for_task(&mut self, agent_id: &str, task_id: &str) -> bool {
@@ -5967,17 +6108,39 @@ impl ChatWidget {
         if state.pending_actions.is_empty() {
             return false;
         }
-        state.pending_actions.clear();
+        let removed = std::mem::take(&mut state.pending_actions);
         state.pending_new_action_id = None;
+        let mut plan_changed = false;
+        for pending in removed.into_values() {
+            if let Some(step_id) = pending.step_id.as_deref()
+                && self.mark_weave_plan_action_completed(step_id)
+            {
+                plan_changed = true;
+            }
+        }
+        if plan_changed {
+            self.emit_weave_plan_update();
+        }
         true
     }
 
     fn clear_pending_weave_actions_for_targets(&mut self, targets: &WeaveRelayTargets) {
+        let mut plan_changed = false;
         for target_id in &targets.target_ids {
             if let Some(state) = self.weave_target_states.get_mut(target_id) {
-                state.pending_actions.clear();
+                let removed = std::mem::take(&mut state.pending_actions);
                 state.pending_new_action_id = None;
+                for pending in removed.into_values() {
+                    if let Some(step_id) = pending.step_id.as_deref()
+                        && self.mark_weave_plan_action_completed(step_id)
+                    {
+                        plan_changed = true;
+                    }
+                }
             }
+        }
+        if plan_changed {
+            self.emit_weave_plan_update();
         }
     }
 
@@ -5985,13 +6148,31 @@ impl ChatWidget {
         let Some(state) = self.weave_target_states.get_mut(agent_id) else {
             return;
         };
-        state
-            .pending_actions
-            .retain(|_, pending| pending.group_id == group_id);
+        let mut removed = Vec::new();
+        state.pending_actions.retain(|_, pending| {
+            let keep = pending.group_id == group_id;
+            if !keep {
+                removed.push(pending.clone());
+            }
+            keep
+        });
         if let Some(pending_id) = state.pending_new_action_id.clone()
             && !state.pending_actions.contains_key(&pending_id)
         {
             state.pending_new_action_id = None;
+        }
+        if !removed.is_empty() {
+            let mut plan_changed = false;
+            for pending in removed {
+                if let Some(step_id) = pending.step_id.as_deref()
+                    && self.mark_weave_plan_action_completed(step_id)
+                {
+                    plan_changed = true;
+                }
+            }
+            if plan_changed {
+                self.emit_weave_plan_update();
+            }
         }
     }
 
