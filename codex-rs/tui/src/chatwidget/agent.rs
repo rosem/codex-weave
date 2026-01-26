@@ -25,9 +25,9 @@ pub(crate) fn spawn_agent(
     let app_event_tx_clone = app_event_tx;
     tokio::spawn(async move {
         let NewThread {
+            thread_id,
             thread,
             session_configured,
-            ..
         } = match server.start_thread(config).await {
             Ok(v) => v,
             Err(err) => {
@@ -49,7 +49,10 @@ pub(crate) fn spawn_agent(
             id: "".to_string(),
             msg: codex_core::protocol::EventMsg::SessionConfigured(session_configured),
         };
-        app_event_tx_clone.send(AppEvent::CodexEvent(ev));
+        app_event_tx_clone.send(AppEvent::CodexEventForThread {
+            thread_id,
+            event: ev,
+        });
 
         let thread_clone = thread.clone();
         tokio::spawn(async move {
@@ -62,7 +65,7 @@ pub(crate) fn spawn_agent(
         });
 
         while let Ok(event) = thread.next_event().await {
-            app_event_tx_clone.send(AppEvent::CodexEvent(event));
+            app_event_tx_clone.send(AppEvent::CodexEventForThread { thread_id, event });
         }
     });
 
@@ -80,13 +83,17 @@ pub(crate) fn spawn_agent_from_existing(
     let (codex_op_tx, mut codex_op_rx) = unbounded_channel::<Op>();
 
     let app_event_tx_clone = app_event_tx;
+    let thread_id = session_configured.session_id;
     tokio::spawn(async move {
         // Forward the captured `SessionConfigured` event so it can be rendered in the UI.
         let ev = codex_core::protocol::Event {
             id: "".to_string(),
             msg: codex_core::protocol::EventMsg::SessionConfigured(session_configured),
         };
-        app_event_tx_clone.send(AppEvent::CodexEvent(ev));
+        app_event_tx_clone.send(AppEvent::CodexEventForThread {
+            thread_id,
+            event: ev,
+        });
 
         let thread_clone = thread.clone();
         tokio::spawn(async move {
@@ -99,7 +106,7 @@ pub(crate) fn spawn_agent_from_existing(
         });
 
         while let Ok(event) = thread.next_event().await {
-            app_event_tx_clone.send(AppEvent::CodexEvent(event));
+            app_event_tx_clone.send(AppEvent::CodexEventForThread { thread_id, event });
         }
     });
 

@@ -3,6 +3,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use ts_rs::TS;
 
+use crate::ThreadId;
 /// User input
 #[non_exhaustive]
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS, JsonSchema)]
@@ -29,6 +30,35 @@ pub enum UserInput {
         name: String,
         path: std::path::PathBuf,
     },
+    /// Agent mention selected by the user (alias + thread id).
+    AgentMention { alias: String, thread_id: ThreadId },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UserInput;
+    use crate::ThreadId;
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+
+    #[test]
+    fn agent_mention_serializes() {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("thread id");
+        let input = UserInput::AgentMention {
+            alias: "Writer".to_string(),
+            thread_id,
+        };
+        let value = serde_json::to_value(&input).expect("serialize");
+        let expected = json!({
+            "type": "agent_mention",
+            "alias": "Writer",
+            "thread_id": "00000000-0000-0000-0000-000000000001",
+        });
+        assert_eq!(value, expected);
+        let decoded: UserInput = serde_json::from_value(expected).expect("deserialize");
+        assert_eq!(decoded, input);
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS, JsonSchema)]

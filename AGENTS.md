@@ -1,5 +1,10 @@
 # Rust/codex-rs
 
+## Weave
+
+- This repo is a fork of openai/codex; keep changes merge-friendly (small, localized diffs; avoid refactors/renames/reformatting unless required; follow file-local conventions).
+- Confirm with the user before making any changes not explicitly requested.
+
 In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`

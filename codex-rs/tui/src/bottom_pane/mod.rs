@@ -34,10 +34,14 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::text::Line;
 use std::time::Duration;
 
+mod agent_alias_view;
+mod agent_mention_popup;
 mod approval_overlay;
 mod request_user_input;
+pub(crate) use agent_alias_view::AgentAliasView;
 pub(crate) use approval_overlay::ApprovalOverlay;
 pub(crate) use approval_overlay::ApprovalRequest;
 pub(crate) use request_user_input::RequestUserInputOverlay;
@@ -195,6 +199,11 @@ impl BottomPane {
 
     pub fn set_skills(&mut self, skills: Option<Vec<SkillMetadata>>) {
         self.composer.set_skill_mentions(skills);
+        self.request_redraw();
+    }
+
+    pub fn set_agent_mentions(&mut self, aliases: Vec<String>) {
+        self.composer.set_agent_mentions(aliases);
         self.request_redraw();
     }
 
@@ -394,6 +403,12 @@ impl BottomPane {
     pub(crate) fn set_footer_hint_override(&mut self, items: Option<Vec<(String, String)>>) {
         self.composer.set_footer_hint_override(items);
         self.request_redraw();
+    }
+
+    pub(crate) fn set_footer_right_label(&mut self, label: Option<Line<'static>>) {
+        if self.composer.set_footer_right_label(label) {
+            self.request_redraw();
+        }
     }
 
     /// Update the status indicator header (defaults to "Working") and details below it.

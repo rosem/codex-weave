@@ -437,9 +437,9 @@ pub const FEATURES: &[FeatureSpec] = &[
         stage: Stage::Experimental {
             name: "Multi-agents",
             menu_description: "Allow Codex to spawn and collaborate with other agents on request (formerly named `collab`).",
-            announcement: "NEW! Codex can now spawn other agents and work with them to solve your problems. Enable in /experimental!",
+            announcement: "NEW! Codex can now spawn other agents and work with them to solve your problems. Toggle in /experimental.",
         },
-        default_enabled: false,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::Connectors,
@@ -453,9 +453,9 @@ pub const FEATURES: &[FeatureSpec] = &[
         stage: Stage::Experimental {
             name: "Steer conversation",
             menu_description: "Enter submits immediately; Tab queues messages when a task is running.",
-            announcement: "NEW! Try Steer mode: Enter submits immediately, Tab queues. Enable in /experimental!",
+            announcement: "NEW! Try Steer mode: Enter submits immediately, Tab queues. Toggle in /experimental.",
         },
-        default_enabled: false,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::CollaborationModes,

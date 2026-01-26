@@ -20,6 +20,7 @@ pub(crate) fn subagent_header(source: &Option<SessionSource>) -> Option<String> 
         codex_protocol::protocol::SubAgentSource::ThreadSpawn { .. } => {
             Some("collab_spawn".to_string())
         }
+        codex_protocol::protocol::SubAgentSource::User => Some("user".to_string()),
         codex_protocol::protocol::SubAgentSource::Other(label) => Some(label.clone()),
     }
 }

@@ -36,7 +36,7 @@ pub(crate) struct FooterProps {
     pub(crate) esc_backtrack_hint: bool,
     pub(crate) use_shift_enter_hint: bool,
     pub(crate) is_task_running: bool,
-    pub(crate) steer_enabled: bool,
+    pub(crate) tab_switches_agents: bool,
     pub(crate) collaboration_modes_enabled: bool,
     /// Which key the user must press again to quit.
     ///
@@ -177,6 +177,48 @@ pub(crate) fn render_mode_indicator(
     buf.set_span(x, y, &span, label_width);
 }
 
+pub(crate) fn render_footer_right_line(
+    area: Rect,
+    buf: &mut Buffer,
+    line: &Line<'static>,
+    left_content_width: Option<u16>,
+) {
+    if area.is_empty() {
+        return;
+    }
+
+    let label_width = line.width() as u16;
+    if label_width == 0 || label_width > area.width {
+        return;
+    }
+
+    let x = area
+        .x
+        .saturating_add(area.width)
+        .saturating_sub(label_width)
+        .saturating_sub(FOOTER_INDENT_COLS as u16);
+    let y = area.y + area.height.saturating_sub(1);
+    if let Some(left_content_width) = left_content_width {
+        let left_extent = FOOTER_INDENT_COLS as u16 + left_content_width;
+        if left_extent >= x.saturating_sub(area.x) {
+            return;
+        }
+    }
+
+    let mut offset = 0u16;
+    for span in &line.spans {
+        let span_width = span.width() as u16;
+        if span_width == 0 {
+            continue;
+        }
+        buf.set_span(x.saturating_add(offset), y, span, span_width);
+        offset = offset.saturating_add(span_width);
+        if offset >= label_width {
+            break;
+        }
+    }
+}
+
 pub(crate) fn inset_footer_hint_area(mut area: Rect) -> Rect {
     if area.width > 2 {
         area.x += 2;
@@ -212,6 +254,14 @@ fn footer_lines(props: FooterProps) -> Vec<Line<'static>> {
                 key_hint::plain(KeyCode::Char('?')).into(),
                 " for shortcuts".dim(),
             ]);
+            line.push_span(" · ".dim());
+            line.push_span(key_hint::plain(KeyCode::Tab));
+            let tab_label = if props.tab_switches_agents {
+                " to switch agents"
+            } else {
+                " to queue message"
+            };
+            line.push_span(tab_label.dim());
             vec![line]
         }
         FooterMode::ShortcutOverlay => {
@@ -224,6 +274,7 @@ fn footer_lines(props: FooterProps) -> Vec<Line<'static>> {
                 use_shift_enter_hint: props.use_shift_enter_hint,
                 esc_backtrack_hint: props.esc_backtrack_hint,
                 is_wsl,
+                tab_switches_agents: props.tab_switches_agents,
                 collaboration_modes_enabled: props.collaboration_modes_enabled,
             };
             shortcut_overlay_lines(state)
@@ -234,7 +285,7 @@ fn footer_lines(props: FooterProps) -> Vec<Line<'static>> {
                 props.context_window_percent,
                 props.context_window_used_tokens,
             );
-            if props.is_task_running && props.steer_enabled {
+            if !props.tab_switches_agents {
                 line.push_span(" · ".dim());
                 line.push_span(key_hint::plain(KeyCode::Tab));
                 line.push_span(" to queue message".dim());
@@ -276,6 +327,7 @@ struct ShortcutsState {
     use_shift_enter_hint: bool,
     esc_backtrack_hint: bool,
     is_wsl: bool,
+    tab_switches_agents: bool,
     collaboration_modes_enabled: bool,
 }
 
@@ -485,6 +537,13 @@ impl ShortcutDescriptor {
                     ]);
                 }
             }
+            ShortcutId::QueueMessageTab => {
+                if state.tab_switches_agents {
+                    line.push_span(" to switch agents");
+                } else {
+                    line.push_span(self.label);
+                }
+            }
             _ => line.push_span(self.label),
         };
         Some(line)
@@ -659,7 +718,7 @@ mod tests {
                 esc_backtrack_hint: false,
                 use_shift_enter_hint: false,
                 is_task_running: false,
-                steer_enabled: false,
+                tab_switches_agents: true,
                 collaboration_modes_enabled: false,
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
@@ -674,7 +733,7 @@ mod tests {
                 esc_backtrack_hint: true,
                 use_shift_enter_hint: true,
                 is_task_running: false,
-                steer_enabled: false,
+                tab_switches_agents: true,
                 collaboration_modes_enabled: false,
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
@@ -689,7 +748,7 @@ mod tests {
                 esc_backtrack_hint: false,
                 use_shift_enter_hint: false,
                 is_task_running: false,
-                steer_enabled: false,
+                tab_switches_agents: true,
                 collaboration_modes_enabled: true,
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
@@ -704,7 +763,7 @@ mod tests {
                 esc_backtrack_hint: false,
                 use_shift_enter_hint: false,
                 is_task_running: false,
-                steer_enabled: false,
+                tab_switches_agents: true,
                 collaboration_modes_enabled: false,
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
@@ -719,7 +778,7 @@ mod tests {
                 esc_backtrack_hint: false,
                 use_shift_enter_hint: false,
                 is_task_running: true,
-                steer_enabled: false,
+                tab_switches_agents: true,
                 collaboration_modes_enabled: false,
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
@@ -734,7 +793,7 @@ mod tests {
                 esc_backtrack_hint: false,
                 use_shift_enter_hint: false,
                 is_task_running: false,
-                steer_enabled: false,
+                tab_switches_agents: true,
                 collaboration_modes_enabled: false,
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
@@ -749,7 +808,7 @@ mod tests {
                 esc_backtrack_hint: true,
                 use_shift_enter_hint: false,
                 is_task_running: false,
-                steer_enabled: false,
+                tab_switches_agents: true,
                 collaboration_modes_enabled: false,
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
@@ -764,7 +823,7 @@ mod tests {
                 esc_backtrack_hint: false,
                 use_shift_enter_hint: false,
                 is_task_running: true,
-                steer_enabled: false,
+                tab_switches_agents: true,
                 collaboration_modes_enabled: false,
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: Some(72),
@@ -779,7 +838,7 @@ mod tests {
                 esc_backtrack_hint: false,
                 use_shift_enter_hint: false,
                 is_task_running: false,
-                steer_enabled: false,
+                tab_switches_agents: true,
                 collaboration_modes_enabled: false,
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
@@ -794,7 +853,7 @@ mod tests {
                 esc_backtrack_hint: false,
                 use_shift_enter_hint: false,
                 is_task_running: true,
-                steer_enabled: false,
+                tab_switches_agents: true,
                 collaboration_modes_enabled: false,
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
@@ -809,7 +868,7 @@ mod tests {
                 esc_backtrack_hint: false,
                 use_shift_enter_hint: false,
                 is_task_running: true,
-                steer_enabled: true,
+                tab_switches_agents: true,
                 collaboration_modes_enabled: false,
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
@@ -822,7 +881,7 @@ mod tests {
             esc_backtrack_hint: false,
             use_shift_enter_hint: false,
             is_task_running: false,
-            steer_enabled: false,
+            tab_switches_agents: true,
             collaboration_modes_enabled: true,
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: None,
@@ -848,7 +907,7 @@ mod tests {
             esc_backtrack_hint: false,
             use_shift_enter_hint: false,
             is_task_running: true,
-            steer_enabled: false,
+            tab_switches_agents: true,
             collaboration_modes_enabled: true,
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: None,

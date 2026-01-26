@@ -26,6 +26,7 @@ pub enum SlashCommand {
     Init,
     Compact,
     Collab,
+    #[strum(serialize = "agents")]
     Agent,
     // Undo,
     Diff,
@@ -61,7 +62,7 @@ impl SlashCommand {
             SlashCommand::Ps => "list background terminals",
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::Collab => "change collaboration mode (experimental)",
-            SlashCommand::Agent => "switch the active agent thread",
+            SlashCommand::Agent => "manage agent threads",
             SlashCommand::Approvals => "choose what Codex can do without approval",
             SlashCommand::Permissions => "choose what Codex is allowed to do",
             SlashCommand::ElevateSandbox => "set up elevated agent sandbox",

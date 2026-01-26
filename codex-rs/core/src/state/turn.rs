@@ -10,6 +10,7 @@ use tokio_util::task::AbortOnDropHandle;
 
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::request_user_input::RequestUserInputResponse;
+use codex_protocol::user_input::UserInput;
 use tokio::sync::oneshot;
 
 use crate::codex::TurnContext;
@@ -71,6 +72,7 @@ pub(crate) struct TurnState {
     pending_approvals: HashMap<String, oneshot::Sender<ReviewDecision>>,
     pending_user_input: HashMap<String, oneshot::Sender<RequestUserInputResponse>>,
     pending_input: Vec<ResponseInputItem>,
+    pending_user_inputs: Vec<UserInput>,
 }
 
 impl TurnState {
@@ -93,6 +95,7 @@ impl TurnState {
         self.pending_approvals.clear();
         self.pending_user_input.clear();
         self.pending_input.clear();
+        self.pending_user_inputs.clear();
     }
 
     pub(crate) fn insert_pending_user_input(
@@ -114,6 +117,10 @@ impl TurnState {
         self.pending_input.push(input);
     }
 
+    pub(crate) fn push_pending_user_inputs(&mut self, input: Vec<UserInput>) {
+        self.pending_user_inputs.extend(input);
+    }
+
     pub(crate) fn take_pending_input(&mut self) -> Vec<ResponseInputItem> {
         if self.pending_input.is_empty() {
             Vec::with_capacity(0)
@@ -124,8 +131,18 @@ impl TurnState {
         }
     }
 
+    pub(crate) fn take_pending_user_inputs(&mut self) -> Vec<UserInput> {
+        if self.pending_user_inputs.is_empty() {
+            Vec::with_capacity(0)
+        } else {
+            let mut ret = Vec::new();
+            std::mem::swap(&mut ret, &mut self.pending_user_inputs);
+            ret
+        }
+    }
+
     pub(crate) fn has_pending_input(&self) -> bool {
-        !self.pending_input.is_empty()
+        !self.pending_input.is_empty() || !self.pending_user_inputs.is_empty()
     }
 }
 

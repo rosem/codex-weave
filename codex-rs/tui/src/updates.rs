@@ -9,6 +9,7 @@ use codex_core::config::Config;
 use codex_core::default_client::create_client;
 use serde::Deserialize;
 use serde::Serialize;
+use std::cmp::Ordering;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -54,11 +55,11 @@ struct VersionInfo {
     dismissed_version: Option<String>,
 }
 
-const VERSION_FILENAME: &str = "version.json";
+const VERSION_FILENAME: &str = "co-dex-version.json";
 // We use the latest version from the cask if installation is via homebrew - homebrew does not immediately pick up the latest release and can lag behind.
 const HOMEBREW_CASK_URL: &str =
     "https://raw.githubusercontent.com/Homebrew/homebrew-cask/HEAD/Casks/c/codex.rb";
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
+const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/rosem/codex-weave/releases/latest";
 
 #[derive(Deserialize, Debug, Clone)]
 struct ReleaseInfo {
@@ -117,10 +118,7 @@ async fn check_for_update(version_file: &Path) -> anyhow::Result<()> {
 }
 
 fn is_newer(latest: &str, current: &str) -> Option<bool> {
-    match (parse_version(latest), parse_version(current)) {
-        (Some(l), Some(c)) => Some(l > c),
-        _ => None,
-    }
+    Some(parse_version(latest)?.cmp(&parse_version(current)?) == Ordering::Greater)
 }
 
 fn extract_version_from_cask(cask_contents: &str) -> anyhow::Result<String> {
@@ -136,10 +134,17 @@ fn extract_version_from_cask(cask_contents: &str) -> anyhow::Result<String> {
 }
 
 fn extract_version_from_latest_tag(latest_tag_name: &str) -> anyhow::Result<String> {
-    latest_tag_name
+    let trimmed = latest_tag_name.trim();
+    let trimmed = trimmed
         .strip_prefix("rust-v")
-        .map(str::to_owned)
-        .ok_or_else(|| anyhow::anyhow!("Failed to parse latest tag name '{latest_tag_name}'"))
+        .or_else(|| trimmed.strip_prefix('v'))
+        .unwrap_or(trimmed);
+    if !trimmed.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
+        return Err(anyhow::anyhow!(
+            "Failed to parse latest tag name '{latest_tag_name}'"
+        ));
+    }
+    Ok(trimmed.to_string())
 }
 
 /// Returns the latest version to show in a popup, if it should be shown.
@@ -177,12 +182,108 @@ pub async fn dismiss_version(config: &Config, version: &str) -> anyhow::Result<(
     Ok(())
 }
 
-fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
-    let mut iter = v.trim().split('.');
-    let maj = iter.next()?.parse::<u64>().ok()?;
-    let min = iter.next()?.parse::<u64>().ok()?;
-    let pat = iter.next()?.parse::<u64>().ok()?;
-    Some((maj, min, pat))
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Version {
+    major: u64,
+    minor: u64,
+    patch: u64,
+    pre: Vec<Identifier>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Identifier {
+    Numeric(u64),
+    Alpha(String),
+}
+
+impl Ord for Version {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.major.cmp(&other.major) {
+            Ordering::Equal => {}
+            ordering => return ordering,
+        }
+        match self.minor.cmp(&other.minor) {
+            Ordering::Equal => {}
+            ordering => return ordering,
+        }
+        match self.patch.cmp(&other.patch) {
+            Ordering::Equal => {}
+            ordering => return ordering,
+        }
+        compare_pre_release(&self.pre, &other.pre)
+    }
+}
+
+impl PartialOrd for Version {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn compare_pre_release(left: &[Identifier], right: &[Identifier]) -> Ordering {
+    match (left.is_empty(), right.is_empty()) {
+        (true, true) => return Ordering::Equal,
+        (true, false) => return Ordering::Greater,
+        (false, true) => return Ordering::Less,
+        (false, false) => {}
+    }
+
+    for (left_id, right_id) in left.iter().zip(right.iter()) {
+        let ordering = match (left_id, right_id) {
+            (Identifier::Numeric(left), Identifier::Numeric(right)) => left.cmp(right),
+            (Identifier::Alpha(left), Identifier::Alpha(right)) => left.cmp(right),
+            (Identifier::Numeric(_), Identifier::Alpha(_)) => Ordering::Less,
+            (Identifier::Alpha(_), Identifier::Numeric(_)) => Ordering::Greater,
+        };
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+
+    left.len().cmp(&right.len())
+}
+
+fn parse_identifier(segment: &str) -> Option<Identifier> {
+    if segment.is_empty() {
+        return None;
+    }
+    if segment.chars().all(|ch| ch.is_ascii_digit()) {
+        segment.parse::<u64>().ok().map(Identifier::Numeric)
+    } else {
+        Some(Identifier::Alpha(segment.to_string()))
+    }
+}
+
+fn parse_version(v: &str) -> Option<Version> {
+    let trimmed = v.trim();
+    let (without_build, _) = trimmed.split_once('+').unwrap_or((trimmed, ""));
+    let (core, pre) = without_build
+        .split_once('-')
+        .map(|(core, pre)| (core, Some(pre)))
+        .unwrap_or((without_build, None));
+
+    let mut iter = core.split('.');
+    let major = iter.next()?.parse::<u64>().ok()?;
+    let minor = iter.next()?.parse::<u64>().ok()?;
+    let patch = iter.next()?.parse::<u64>().ok()?;
+    if iter.next().is_some() {
+        return None;
+    }
+
+    let pre = match pre {
+        None => Vec::new(),
+        Some(pre) => pre
+            .split('.')
+            .map(parse_identifier)
+            .collect::<Option<Vec<_>>>()?,
+    };
+
+    Some(Version {
+        major,
+        minor,
+        patch,
+        pre,
+    })
 }
 
 #[cfg(test)]
@@ -205,20 +306,24 @@ mod tests {
     #[test]
     fn extracts_version_from_latest_tag() {
         assert_eq!(
-            extract_version_from_latest_tag("rust-v1.5.0").expect("failed to parse version"),
+            extract_version_from_latest_tag("0.91.0-co-dex.1").expect("failed to parse version"),
+            "0.91.0-co-dex.1"
+        );
+        assert_eq!(
+            extract_version_from_latest_tag("v1.5.0").expect("failed to parse version"),
             "1.5.0"
         );
     }
 
     #[test]
     fn latest_tag_without_prefix_is_invalid() {
-        assert!(extract_version_from_latest_tag("v1.5.0").is_err());
+        assert!(extract_version_from_latest_tag("release-1.5.0").is_err());
     }
 
     #[test]
     fn prerelease_version_is_not_considered_newer() {
-        assert_eq!(is_newer("0.11.0-beta.1", "0.11.0"), None);
-        assert_eq!(is_newer("1.0.0-rc.1", "1.0.0"), None);
+        assert_eq!(is_newer("0.11.0-beta.1", "0.11.0"), Some(false));
+        assert_eq!(is_newer("1.0.0-rc.1", "1.0.0"), Some(false));
     }
 
     #[test]
@@ -230,8 +335,22 @@ mod tests {
     }
 
     #[test]
+    fn co_dex_version_comparisons_work() {
+        assert_eq!(is_newer("0.91.0-co-dex.2", "0.91.0-co-dex.1"), Some(true));
+        assert_eq!(is_newer("0.91.0-co-dex.1", "0.91.0"), Some(false));
+    }
+
+    #[test]
     fn whitespace_is_ignored() {
-        assert_eq!(parse_version(" 1.2.3 \n"), Some((1, 2, 3)));
+        assert_eq!(
+            parse_version(" 1.2.3 \n"),
+            Some(Version {
+                major: 1,
+                minor: 2,
+                patch: 3,
+                pre: Vec::new(),
+            })
+        );
         assert_eq!(is_newer(" 1.2.3 ", "1.2.2"), Some(true));
     }
 }

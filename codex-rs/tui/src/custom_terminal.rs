@@ -373,10 +373,20 @@ where
         if self.viewport_area.is_empty() {
             return Ok(());
         }
-        self.backend
-            .set_cursor_position(self.viewport_area.as_position())?;
+        self.set_cursor_position(self.viewport_area.as_position())?;
         self.backend.clear_region(ClearType::AfterCursor)?;
         // Reset the back buffer to make sure the next update will redraw everything.
+        self.previous_buffer_mut().reset();
+        Ok(())
+    }
+
+    /// Clear the entire visible screen and force a full redraw.
+    pub fn clear_screen(&mut self) -> io::Result<()> {
+        if self.viewport_area.is_empty() {
+            return Ok(());
+        }
+        self.set_cursor_position(Position { x: 0, y: 0 })?;
+        self.backend.clear_region(ClearType::All)?;
         self.previous_buffer_mut().reset();
         Ok(())
     }
@@ -386,8 +396,7 @@ where
         if self.viewport_area.is_empty() {
             return Ok(());
         }
-        self.backend
-            .set_cursor_position(self.viewport_area.as_position())?;
+        self.set_cursor_position(self.viewport_area.as_position())?;
         queue!(self.backend, Clear(crossterm::terminal::ClearType::Purge))?;
         std::io::Write::flush(&mut self.backend)?;
         self.previous_buffer_mut().reset();

@@ -128,6 +128,9 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
         AppEvent::CodexEvent(ev) => {
             write_record("to_tui", "codex_event", ev);
         }
+        AppEvent::CodexEventForThread { event, .. } => {
+            write_record("to_tui", "codex_event", event);
+        }
         AppEvent::NewSession => {
             let value = json!({
                 "ts": now_ts(),
@@ -137,6 +140,15 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
             LOGGER.write_json_line(value);
         }
         AppEvent::InsertHistoryCell(cell) => {
+            let value = json!({
+                "ts": now_ts(),
+                "dir": "to_tui",
+                "kind": "insert_history_cell",
+                "lines": cell.transcript_lines(u16::MAX).len(),
+            });
+            LOGGER.write_json_line(value);
+        }
+        AppEvent::InsertHistoryCellForThread { cell, .. } => {
             let value = json!({
                 "ts": now_ts(),
                 "dir": "to_tui",

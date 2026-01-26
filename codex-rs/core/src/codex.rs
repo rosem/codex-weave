@@ -13,6 +13,7 @@ use crate::SandboxState;
 use crate::agent::AgentControl;
 use crate::agent::AgentStatus;
 use crate::agent::agent_status_from_event;
+use crate::agent_mentions::build_agent_mention_instructions;
 use crate::compact;
 use crate::compact::run_inline_auto_compact_task;
 use crate::compact::should_use_remote_compact_task;
@@ -1880,7 +1881,7 @@ impl Session {
         match active.as_mut() {
             Some(at) => {
                 let mut ts = at.turn_state.lock().await;
-                ts.push_pending_input(input.into());
+                ts.push_pending_user_inputs(input);
                 Ok(())
             }
             None => Err(input),
@@ -1911,6 +1912,17 @@ impl Session {
             Some(at) => {
                 let mut ts = at.turn_state.lock().await;
                 ts.take_pending_input()
+            }
+            None => Vec::with_capacity(0),
+        }
+    }
+
+    pub async fn get_pending_user_input(&self) -> Vec<UserInput> {
+        let mut active = self.active_turn.lock().await;
+        match active.as_mut() {
+            Some(at) => {
+                let mut ts = at.turn_state.lock().await;
+                ts.take_pending_user_inputs()
             }
             None => Vec::with_capacity(0),
         }
@@ -2908,6 +2920,7 @@ pub(crate) async fn run_turn(
     if input.is_empty() {
         return None;
     }
+    let base_mention_instructions = build_agent_mention_instructions(&input);
 
     let model_info = turn_context.client.get_model_info();
     let auto_compact_limit = model_info.auto_compact_token_limit().unwrap_or(i64::MAX);
@@ -2961,19 +2974,32 @@ pub(crate) async fn run_turn(
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
         // may support this, the model might not.
-        let pending_input = sess
-            .get_pending_input()
-            .await
+        let pending_user_input = sess.get_pending_user_input().await;
+        let mut pending_input = sess.get_pending_input().await;
+        if !pending_user_input.is_empty() {
+            pending_input.push(ResponseInputItem::from(pending_user_input.clone()));
+        }
+        let pending_input = pending_input
             .into_iter()
             .map(ResponseItem::from)
             .collect::<Vec<ResponseItem>>();
+        let mention_instructions = if pending_user_input.is_empty() {
+            base_mention_instructions.clone()
+        } else {
+            let mut mention_inputs = input.clone();
+            mention_inputs.extend(pending_user_input);
+            build_agent_mention_instructions(&mention_inputs)
+        };
 
         // Construct the input that we will send to the model.
-        let sampling_request_input: Vec<ResponseItem> = {
+        let mut sampling_request_input: Vec<ResponseItem> = {
             sess.record_conversation_items(&turn_context, &pending_input)
                 .await;
             sess.clone_history().await.for_prompt()
         };
+        if let Some(mention_instruction) = mention_instructions.as_ref() {
+            sampling_request_input.push(mention_instruction.clone());
+        }
 
         let sampling_request_input_messages = sampling_request_input
             .iter()

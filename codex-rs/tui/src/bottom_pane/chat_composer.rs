@@ -88,6 +88,7 @@ use ratatui::widgets::Block;
 use ratatui::widgets::StatefulWidgetRef;
 use ratatui::widgets::WidgetRef;
 
+use super::agent_mention_popup::AgentMentionPopup;
 use super::chat_composer_history::ChatComposerHistory;
 use super::command_popup::CommandItem;
 use super::command_popup::CommandPopup;
@@ -103,6 +104,7 @@ use super::footer::footer_line_width;
 use super::footer::inset_footer_hint_area;
 use super::footer::render_footer;
 use super::footer::render_footer_hint_items;
+use super::footer::render_footer_right_line;
 use super::footer::render_mode_indicator;
 use super::footer::reset_mode_after_activity;
 use super::footer::toggle_shortcut_mode;
@@ -226,12 +228,15 @@ pub(crate) struct ChatComposer {
     custom_prompts: Vec<CustomPrompt>,
     footer_mode: FooterMode,
     footer_hint_override: Option<Vec<(String, String)>>,
+    footer_right_label: Option<Line<'static>>,
     footer_flash: Option<FooterFlash>,
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
     skills: Option<Vec<SkillMetadata>>,
+    agent_mentions: Vec<String>,
     dismissed_skill_popup_token: Option<String>,
-    /// When enabled, `Enter` submits immediately and `Tab` requests queuing behavior.
+    dismissed_agent_popup_token: Option<String>,
+    /// When enabled, `Enter` submits immediately.
     steer_enabled: bool,
     collaboration_modes_enabled: bool,
     collaboration_mode_indicator: Option<CollaborationModeIndicator>,
@@ -249,6 +254,7 @@ enum ActivePopup {
     Command(CommandPopup),
     File(FileSearchPopup),
     Skill(SkillPopup),
+    Agent(AgentMentionPopup),
 }
 
 const FOOTER_SPACING_HEIGHT: u16 = 0;
@@ -288,11 +294,14 @@ impl ChatComposer {
             custom_prompts: Vec::new(),
             footer_mode: FooterMode::ShortcutSummary,
             footer_hint_override: None,
+            footer_right_label: None,
             footer_flash: None,
             context_window_percent: None,
             context_window_used_tokens: None,
             skills: None,
+            agent_mentions: Vec::new(),
             dismissed_skill_popup_token: None,
+            dismissed_agent_popup_token: None,
             steer_enabled: false,
             collaboration_modes_enabled: false,
             collaboration_mode_indicator: None,
@@ -306,10 +315,16 @@ impl ChatComposer {
         self.skills = skills;
     }
 
+    pub fn set_agent_mentions(&mut self, aliases: Vec<String>) {
+        self.agent_mentions = aliases;
+        if let ActivePopup::Agent(popup) = &mut self.active_popup {
+            popup.set_aliases(self.agent_mentions.clone());
+        }
+    }
+
     /// Enables or disables "Steer" behavior for submission keys.
     ///
-    /// When steer is enabled, `Enter` produces [`InputResult::Submitted`] (send immediately) and
-    /// `Tab` produces [`InputResult::Queued`] (eligible to queue if a task is running).
+    /// When steer is enabled, `Enter` produces [`InputResult::Submitted`] (send immediately).
     /// When steer is disabled, `Enter` produces [`InputResult::Queued`], preserving the default
     /// "queue while a task is running" behavior.
     pub fn set_steer_enabled(&mut self, enabled: bool) {
@@ -340,6 +355,9 @@ impl ChatComposer {
             }
             ActivePopup::File(popup) => Constraint::Max(popup.calculate_required_height()),
             ActivePopup::Skill(popup) => {
+                Constraint::Max(popup.calculate_required_height(area.width))
+            }
+            ActivePopup::Agent(popup) => {
                 Constraint::Max(popup.calculate_required_height(area.width))
             }
             ActivePopup::None => Constraint::Max(footer_total_height),
@@ -560,6 +578,14 @@ impl ChatComposer {
     /// `None` restores the default shortcut footer.
     pub(crate) fn set_footer_hint_override(&mut self, items: Option<Vec<(String, String)>>) {
         self.footer_hint_override = items;
+    }
+
+    pub(crate) fn set_footer_right_label(&mut self, label: Option<Line<'static>>) -> bool {
+        if self.footer_right_label == label {
+            return false;
+        }
+        self.footer_right_label = label;
+        true
     }
 
     #[cfg(test)]
@@ -788,6 +814,7 @@ impl ChatComposer {
             ActivePopup::Command(_) => self.handle_key_event_with_slash_popup(key_event),
             ActivePopup::File(_) => self.handle_key_event_with_file_popup(key_event),
             ActivePopup::Skill(_) => self.handle_key_event_with_skill_popup(key_event),
+            ActivePopup::Agent(_) => self.handle_key_event_with_agent_popup(key_event),
             ActivePopup::None => self.handle_key_event_without_popup(key_event),
         };
 
@@ -1272,6 +1299,68 @@ impl ChatComposer {
         }
     }
 
+    fn handle_key_event_with_agent_popup(&mut self, key_event: KeyEvent) -> (InputResult, bool) {
+        if self.handle_shortcut_overlay_key(&key_event) {
+            return (InputResult::None, true);
+        }
+        self.footer_mode = reset_mode_after_activity(self.footer_mode);
+
+        let ActivePopup::Agent(popup) = &mut self.active_popup else {
+            unreachable!();
+        };
+
+        match key_event {
+            KeyEvent {
+                code: KeyCode::Up, ..
+            }
+            | KeyEvent {
+                code: KeyCode::Char('p'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                popup.move_up();
+                (InputResult::None, true)
+            }
+            KeyEvent {
+                code: KeyCode::Down,
+                ..
+            }
+            | KeyEvent {
+                code: KeyCode::Char('n'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                popup.move_down();
+                (InputResult::None, true)
+            }
+            KeyEvent {
+                code: KeyCode::Esc, ..
+            } => {
+                if let Some(tok) = self.current_agent_token() {
+                    self.dismissed_agent_popup_token = Some(tok);
+                }
+                self.active_popup = ActivePopup::None;
+                (InputResult::None, true)
+            }
+            KeyEvent {
+                code: KeyCode::Tab, ..
+            }
+            | KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
+                let selected = popup.selected_alias().map(str::to_string);
+                if let Some(alias) = selected {
+                    self.insert_selected_agent_alias(&alias);
+                }
+                self.active_popup = ActivePopup::None;
+                (InputResult::None, true)
+            }
+            input => self.handle_input_basic(input),
+        }
+    }
+
     fn is_image_path(path: &str) -> bool {
         let lower = path.to_ascii_lowercase();
         lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg")
@@ -1510,6 +1599,10 @@ impl ChatComposer {
         Self::current_prefixed_token(&self.textarea, '$', true)
     }
 
+    fn current_agent_token(&self) -> Option<String> {
+        Self::current_prefixed_token(&self.textarea, '#', true)
+    }
+
     /// Replace the active `@token` (the one under the cursor) with `path`.
     ///
     /// The algorithm mirrors `current_at_token` so replacement works no matter
@@ -1593,6 +1686,41 @@ impl ChatComposer {
         new_text.push_str(&text[end_idx..]);
 
         // Skill insertion rebuilds plain text, so drop existing elements.
+        self.textarea.set_text_clearing_elements(&new_text);
+        let new_cursor = start_idx.saturating_add(inserted.len()).saturating_add(1);
+        self.textarea.set_cursor(new_cursor);
+    }
+
+    fn insert_selected_agent_alias(&mut self, alias: &str) {
+        let cursor_offset = self.textarea.cursor();
+        let text = self.textarea.text();
+        let safe_cursor = Self::clamp_to_char_boundary(text, cursor_offset);
+
+        let before_cursor = &text[..safe_cursor];
+        let after_cursor = &text[safe_cursor..];
+
+        let start_idx = before_cursor
+            .char_indices()
+            .rfind(|(_, c)| c.is_whitespace())
+            .map(|(idx, c)| idx + c.len_utf8())
+            .unwrap_or(0);
+
+        let end_rel_idx = after_cursor
+            .char_indices()
+            .find(|(_, c)| c.is_whitespace())
+            .map(|(idx, _)| idx)
+            .unwrap_or(after_cursor.len());
+        let end_idx = safe_cursor + end_rel_idx;
+
+        let inserted = format!("#{alias}");
+
+        let mut new_text =
+            String::with_capacity(text.len() - (end_idx - start_idx) + inserted.len() + 1);
+        new_text.push_str(&text[..start_idx]);
+        new_text.push_str(&inserted);
+        new_text.push(' ');
+        new_text.push_str(&text[end_idx..]);
+
         self.textarea.set_text_clearing_elements(&new_text);
         let new_cursor = start_idx.saturating_add(inserted.len()).saturating_add(1);
         self.textarea.set_cursor(new_cursor);
@@ -1892,7 +2020,13 @@ impl ChatComposer {
                 modifiers: KeyModifiers::NONE,
                 kind: KeyEventKind::Press,
                 ..
-            } if self.is_task_running => self.handle_submission(true),
+            } => {
+                if self.is_empty() {
+                    (InputResult::None, true)
+                } else {
+                    self.handle_submission(true)
+                }
+            }
             KeyEvent {
                 code: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
@@ -2039,15 +2173,6 @@ impl ChatComposer {
         {
             self.handle_paste(pasted);
         }
-        // Backspace at the start of an image placeholder should delete that placeholder (rather
-        // than deleting content before it). Do this without scanning the full text by consulting
-        // the textarea's element list.
-        if matches!(input.code, KeyCode::Backspace)
-            && self.try_remove_image_element_at_cursor_start()
-        {
-            return (InputResult::None, true);
-        }
-
         // For non-char inputs (or after flushing), handle normally.
         // Track element removals so we can drop any corresponding placeholders without scanning
         // the full text. (Placeholders are atomic elements; when deleted, the element disappears.)
@@ -2084,29 +2209,6 @@ impl ChatComposer {
         }
 
         (InputResult::None, true)
-    }
-
-    fn try_remove_image_element_at_cursor_start(&mut self) -> bool {
-        if self.attached_images.is_empty() {
-            return false;
-        }
-
-        let p = self.textarea.cursor();
-        let Some(payload) = self.textarea.element_payload_starting_at(p) else {
-            return false;
-        };
-        let Some(idx) = self
-            .attached_images
-            .iter()
-            .position(|img| img.placeholder == payload)
-        else {
-            return false;
-        };
-
-        self.textarea.replace_range(p..p + payload.len(), "");
-        self.attached_images.remove(idx);
-        self.relabel_attached_images_and_update_placeholders();
-        true
     }
 
     fn reconcile_deleted_elements(&mut self, elements_before: Vec<String>) {
@@ -2175,7 +2277,7 @@ impl ChatComposer {
             use_shift_enter_hint: self.use_shift_enter_hint,
             is_task_running: self.is_task_running,
             quit_shortcut_key: self.quit_shortcut_key,
-            steer_enabled: self.steer_enabled,
+            tab_switches_agents: self.is_empty(),
             collaboration_modes_enabled: self.collaboration_modes_enabled,
             context_window_percent: self.context_window_percent,
             context_window_used_tokens: self.context_window_used_tokens,
@@ -2218,16 +2320,25 @@ impl ChatComposer {
             self.active_popup = ActivePopup::None;
             return;
         }
+        let agent_token = self.current_agent_token();
         let skill_token = self.current_skill_token();
 
-        let allow_command_popup = file_token.is_none() && skill_token.is_none();
+        let allow_command_popup =
+            file_token.is_none() && skill_token.is_none() && agent_token.is_none();
         self.sync_command_popup(allow_command_popup);
 
         if matches!(self.active_popup, ActivePopup::Command(_)) {
             self.dismissed_file_popup_token = None;
             self.dismissed_skill_popup_token = None;
+            self.dismissed_agent_popup_token = None;
             return;
         }
+
+        if let Some(token) = agent_token {
+            self.sync_agent_popup(token);
+            return;
+        }
+        self.dismissed_agent_popup_token = None;
 
         if let Some(token) = skill_token {
             self.sync_skill_popup(token);
@@ -2243,7 +2354,7 @@ impl ChatComposer {
         self.dismissed_file_popup_token = None;
         if matches!(
             self.active_popup,
-            ActivePopup::File(_) | ActivePopup::Skill(_)
+            ActivePopup::File(_) | ActivePopup::Skill(_) | ActivePopup::Agent(_)
         ) {
             self.active_popup = ActivePopup::None;
         }
@@ -2432,6 +2543,30 @@ impl ChatComposer {
         }
     }
 
+    fn sync_agent_popup(&mut self, query: String) {
+        if self.dismissed_agent_popup_token.as_ref() == Some(&query) {
+            return;
+        }
+
+        if self.agent_mentions.is_empty() {
+            self.active_popup = ActivePopup::None;
+            return;
+        }
+
+        let aliases = self.agent_mentions.clone();
+        match &mut self.active_popup {
+            ActivePopup::Agent(popup) => {
+                popup.set_query(&query);
+                popup.set_aliases(aliases);
+            }
+            _ => {
+                let mut popup = AgentMentionPopup::new(aliases);
+                popup.set_query(&query);
+                self.active_popup = ActivePopup::Agent(popup);
+            }
+        }
+    }
+
     fn set_has_focus(&mut self, has_focus: bool) {
         self.has_focus = has_focus;
     }
@@ -2497,6 +2632,7 @@ impl Renderable for ChatComposer {
                 ActivePopup::Command(c) => c.calculate_required_height(width),
                 ActivePopup::File(c) => c.calculate_required_height(),
                 ActivePopup::Skill(c) => c.calculate_required_height(width),
+                ActivePopup::Agent(c) => c.calculate_required_height(width),
             }
     }
 
@@ -2510,6 +2646,9 @@ impl Renderable for ChatComposer {
                 popup.render_ref(popup_rect, buf);
             }
             ActivePopup::Skill(popup) => {
+                popup.render_ref(popup_rect, buf);
+            }
+            ActivePopup::Agent(popup) => {
                 popup.render_ref(popup_rect, buf);
             }
             ActivePopup::None => {
@@ -2541,13 +2680,17 @@ impl Renderable for ChatComposer {
                     render_footer(hint_rect, buf, footer_props);
                     left_content_width = Some(footer_line_width(footer_props));
                 }
-                render_mode_indicator(
-                    hint_rect,
-                    buf,
-                    self.collaboration_mode_indicator,
-                    !footer_props.is_task_running,
-                    left_content_width,
-                );
+                if let Some(label) = self.footer_right_label.as_ref() {
+                    render_footer_right_line(hint_rect, buf, label, left_content_width);
+                } else {
+                    render_mode_indicator(
+                        hint_rect,
+                        buf,
+                        self.collaboration_mode_indicator,
+                        !footer_props.is_task_running,
+                        left_content_width,
+                    );
+                }
             }
         }
         let style = user_message_style();
@@ -4662,8 +4805,7 @@ mod tests {
         assert!(!composer.textarea.text().contains(&placeholder));
         assert!(composer.attached_images.is_empty());
 
-        // Re-add and test backspace in middle: should break the placeholder string
-        // and drop the image mapping (same as text placeholder behavior).
+        // Re-add and ensure backspace at element start does not delete the placeholder.
         composer.attach_image(path);
         let placeholder2 = composer.attached_images[0].placeholder.clone();
         // Move cursor to roughly middle of placeholder
@@ -4671,8 +4813,8 @@ mod tests {
             let mid_pos = start_pos + (placeholder2.len() / 2);
             composer.textarea.set_cursor(mid_pos);
             composer.handle_key_event(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
-            assert!(!composer.textarea.text().contains(&placeholder2));
-            assert!(composer.attached_images.is_empty());
+            assert!(composer.textarea.text().contains(&placeholder2));
+            assert_eq!(composer.attached_images.len(), 1);
         } else {
             panic!("Placeholder not found in textarea");
         }
@@ -4852,7 +4994,7 @@ mod tests {
         assert_eq!(composer.textarea.text(), "[Image #1][Image #2]");
         assert_eq!(composer.attached_images.len(), 2);
 
-        // Delete the first element using normal textarea editing (Delete at cursor start).
+        // Delete the first element using normal textarea editing (forward Delete at cursor start).
         composer.textarea.set_cursor(0);
         composer.handle_key_event(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
 
@@ -5398,17 +5540,20 @@ mod tests {
 
         let mut found_error = false;
         while let Ok(event) = rx.try_recv() {
-            if let AppEvent::InsertHistoryCell(cell) = event {
-                let message = cell
-                    .display_lines(80)
-                    .into_iter()
-                    .map(|line| line.to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                assert!(message.contains("expected key=value"));
-                found_error = true;
-                break;
-            }
+            let cell = match event {
+                AppEvent::InsertHistoryCell(cell) => cell,
+                AppEvent::InsertHistoryCellForThread { cell, .. } => cell,
+                _ => continue,
+            };
+            let message = cell
+                .display_lines(80)
+                .into_iter()
+                .map(|line| line.to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(message.contains("expected key=value"));
+            found_error = true;
+            break;
         }
         assert!(found_error, "expected error history cell to be sent");
     }
@@ -5446,18 +5591,21 @@ mod tests {
 
         let mut found_error = false;
         while let Ok(event) = rx.try_recv() {
-            if let AppEvent::InsertHistoryCell(cell) = event {
-                let message = cell
-                    .display_lines(80)
-                    .into_iter()
-                    .map(|line| line.to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                assert!(message.to_lowercase().contains("missing required args"));
-                assert!(message.contains("BRANCH"));
-                found_error = true;
-                break;
-            }
+            let cell = match event {
+                AppEvent::InsertHistoryCell(cell) => cell,
+                AppEvent::InsertHistoryCellForThread { cell, .. } => cell,
+                _ => continue,
+            };
+            let message = cell
+                .display_lines(80)
+                .into_iter()
+                .map(|line| line.to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(message.to_lowercase().contains("missing required args"));
+            assert!(message.contains("BRANCH"));
+            found_error = true;
+            break;
         }
         assert!(
             found_error,

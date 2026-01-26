@@ -19,7 +19,7 @@ use crate::rollout::RolloutRecorder;
 use crate::rollout::truncation;
 use crate::skills::SkillsManager;
 use codex_protocol::ThreadId;
-use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::McpServerRefreshConfig;
@@ -158,7 +158,7 @@ impl ThreadManager {
             .await
     }
 
-    pub fn list_collaboration_modes(&self) -> Vec<CollaborationMode> {
+    pub fn list_collaboration_modes(&self) -> Vec<CollaborationModeMask> {
         self.state.models_manager.list_collaboration_modes()
     }
 
@@ -206,6 +206,16 @@ impl ThreadManager {
             .await
     }
 
+    pub async fn spawn_agent_idle(
+        &self,
+        config: Config,
+        session_source: Option<SessionSource>,
+    ) -> CodexResult<ThreadId> {
+        self.agent_control()
+            .spawn_agent_idle(config, session_source)
+            .await
+    }
+
     pub async fn resume_thread_from_rollout(
         &self,
         config: Config,
@@ -233,6 +243,10 @@ impl ThreadManager {
     /// Returns the thread if the thread was found and removed.
     pub async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
         self.state.threads.write().await.remove(thread_id)
+    }
+
+    pub async fn shutdown_agent(&self, thread_id: ThreadId) -> CodexResult<String> {
+        self.agent_control().shutdown_agent(thread_id).await
     }
 
     /// Closes all threads open in this ThreadManager
@@ -306,16 +320,6 @@ impl ThreadManagerState {
     /// Remove a thread from the manager by ID, returning it when present.
     pub(crate) async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
         self.threads.write().await.remove(thread_id)
-    }
-
-    /// Spawn a new thread with no history using a provided config.
-    pub(crate) async fn spawn_new_thread(
-        &self,
-        config: Config,
-        agent_control: AgentControl,
-    ) -> CodexResult<NewThread> {
-        self.spawn_new_thread_with_source(config, agent_control, self.session_source.clone())
-            .await
     }
 
     pub(crate) async fn spawn_new_thread_with_source(

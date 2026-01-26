@@ -5,6 +5,8 @@ use crate::error::Result as CodexResult;
 use crate::thread_manager::ThreadManagerState;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
 use std::sync::Arc;
 use std::sync::Weak;
@@ -39,28 +41,33 @@ impl AgentControl {
         &self,
         config: crate::config::Config,
         prompt: String,
-        session_source: Option<codex_protocol::protocol::SessionSource>,
+        session_source: Option<SessionSource>,
+    ) -> CodexResult<ThreadId> {
+        let thread_id = self.spawn_agent_idle(config, session_source).await?;
+        self.send_prompt(thread_id, prompt).await?;
+        Ok(thread_id)
+    }
+
+    /// Spawn a new agent thread without submitting an initial prompt.
+    pub(crate) async fn spawn_agent_idle(
+        &self,
+        config: crate::config::Config,
+        session_source: Option<SessionSource>,
     ) -> CodexResult<ThreadId> {
         let state = self.upgrade()?;
         let reservation = self.state.reserve_spawn_slot(config.agent_max_threads)?;
+        let session_source =
+            session_source.unwrap_or(SessionSource::SubAgent(SubAgentSource::User));
 
-        // The same `AgentControl` is sent to spawn the thread.
-        let new_thread = match session_source {
-            Some(session_source) => {
-                state
-                    .spawn_new_thread_with_source(config, self.clone(), session_source)
-                    .await?
-            }
-            None => state.spawn_new_thread(config, self.clone()).await?,
-        };
+        let new_thread = state
+            .spawn_new_thread_with_source(config, self.clone(), session_source)
+            .await?;
         reservation.commit(new_thread.thread_id);
 
         // Notify a new thread has been created. This notification will be processed by clients
         // to subscribe or drain this newly created thread.
         // TODO(jif) add helper for drain
         state.notify_thread_created(new_thread.thread_id);
-
-        self.send_prompt(new_thread.thread_id, prompt).await?;
 
         Ok(new_thread.thread_id)
     }

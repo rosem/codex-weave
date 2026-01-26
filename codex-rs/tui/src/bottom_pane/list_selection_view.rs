@@ -42,6 +42,7 @@ pub(crate) struct SelectionItem {
     pub selected_description: Option<String>,
     pub is_current: bool,
     pub is_default: bool,
+    pub is_heading: bool,
     pub actions: Vec<SelectionAction>,
     pub dismiss_on_select: bool,
     pub search_value: Option<String>,
@@ -56,6 +57,7 @@ pub(crate) struct SelectionViewParams {
     pub items: Vec<SelectionItem>,
     pub is_searchable: bool,
     pub search_placeholder: Option<String>,
+    pub show_indices: bool,
     pub header: Box<dyn Renderable>,
     pub initial_selected_idx: Option<usize>,
 }
@@ -70,6 +72,7 @@ impl Default for SelectionViewParams {
             items: Vec::new(),
             is_searchable: false,
             search_placeholder: None,
+            show_indices: true,
             header: Box::new(()),
             initial_selected_idx: None,
         }
@@ -86,6 +89,7 @@ pub(crate) struct ListSelectionView {
     is_searchable: bool,
     search_query: String,
     search_placeholder: Option<String>,
+    show_indices: bool,
     filtered_indices: Vec<usize>,
     last_selected_actual_idx: Option<usize>,
     header: Box<dyn Renderable>,
@@ -118,6 +122,7 @@ impl ListSelectionView {
             } else {
                 None
             },
+            show_indices: params.show_indices,
             filtered_indices: Vec::new(),
             last_selected_actual_idx: None,
             header,
@@ -183,39 +188,63 @@ impl ListSelectionView {
         let visible = Self::max_visible_rows(len);
         self.state.clamp_selection(len);
         self.state.ensure_visible(len, visible);
+        self.skip_disabled_down();
+        self.state.ensure_visible(len, visible);
+    }
+
+    fn is_selectable(&self, item: &SelectionItem) -> bool {
+        !item.is_heading && item.disabled_reason.is_none()
     }
 
     fn build_rows(&self) -> Vec<GenericDisplayRow> {
+        let mut display_index = 0usize;
         self.filtered_indices
             .iter()
             .enumerate()
             .filter_map(|(visible_idx, actual_idx)| {
                 self.items.get(*actual_idx).map(|item| {
+                    let is_heading = item.is_heading;
                     let is_selected = self.state.selected_idx == Some(visible_idx);
-                    let prefix = if is_selected { '›' } else { ' ' };
+                    let prefix = if is_heading {
+                        ' '
+                    } else if is_selected {
+                        '›'
+                    } else {
+                        ' '
+                    };
                     let name = item.name.as_str();
-                    let marker = if item.is_current {
+                    let marker = if is_heading {
+                        ""
+                    } else if item.is_current {
                         " (current)"
                     } else if item.is_default {
                         " (default)"
                     } else {
                         ""
                     };
-                    let name_with_marker = format!("{name}{marker}");
-                    let n = visible_idx + 1;
-                    let wrap_prefix = if self.is_searchable {
+                    let name_with_marker = if is_heading {
+                        name.to_string()
+                    } else {
+                        format!("{name}{marker}")
+                    };
+                    let wrap_prefix = if is_heading || self.is_searchable || !self.show_indices {
                         // The number keys don't work when search is enabled (since we let the
                         // numbers be used for the search query).
                         format!("{prefix} ")
                     } else {
-                        format!("{prefix} {n}. ")
+                        display_index += 1;
+                        format!("{prefix} {display_index}. ")
                     };
                     let wrap_prefix_width = UnicodeWidthStr::width(wrap_prefix.as_str());
                     let display_name = format!("{wrap_prefix}{name_with_marker}");
-                    let description = is_selected
-                        .then(|| item.selected_description.clone())
-                        .flatten()
-                        .or_else(|| item.description.clone());
+                    let description = if is_heading {
+                        None
+                    } else {
+                        is_selected
+                            .then(|| item.selected_description.clone())
+                            .flatten()
+                            .or_else(|| item.description.clone())
+                    };
                     let wrap_indent = description.is_none().then_some(wrap_prefix_width);
                     GenericDisplayRow {
                         name: display_name,
@@ -223,7 +252,9 @@ impl ListSelectionView {
                         match_indices: None,
                         description,
                         wrap_indent,
-                        disabled_reason: item.disabled_reason.clone(),
+                        disabled_reason: (!is_heading)
+                            .then(|| item.disabled_reason.clone())
+                            .flatten(),
                     }
                 })
             })
@@ -250,7 +281,7 @@ impl ListSelectionView {
         if let Some(idx) = self.state.selected_idx
             && let Some(actual_idx) = self.filtered_indices.get(idx)
             && let Some(item) = self.items.get(*actual_idx)
-            && item.disabled_reason.is_none()
+            && self.is_selectable(item)
         {
             self.last_selected_actual_idx = Some(*actual_idx);
             for act in &item.actions {
@@ -286,13 +317,15 @@ impl ListSelectionView {
                 && self
                     .items
                     .get(*actual_idx)
-                    .is_some_and(|item| item.disabled_reason.is_some())
+                    .is_some_and(|item| !self.is_selectable(item))
             {
                 self.state.move_down_wrap(len);
             } else {
                 break;
             }
         }
+        let visible = Self::max_visible_rows(len);
+        self.state.ensure_visible(len, visible);
     }
 
     fn skip_disabled_up(&mut self) {
@@ -303,13 +336,15 @@ impl ListSelectionView {
                 && self
                     .items
                     .get(*actual_idx)
-                    .is_some_and(|item| item.disabled_reason.is_some())
+                    .is_some_and(|item| !self.is_selectable(item))
             {
                 self.state.move_up_wrap(len);
             } else {
                 break;
             }
         }
+        let visible = Self::max_visible_rows(len);
+        self.state.ensure_visible(len, visible);
     }
 }
 

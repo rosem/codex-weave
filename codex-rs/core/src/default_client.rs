@@ -267,13 +267,20 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn test_macos() {
-        use regex_lite::Regex;
         let user_agent = get_codex_user_agent();
-        let originator = regex_lite::escape(originator().value.as_str());
-        let re = Regex::new(&format!(
-            r"^{originator}/\d+\.\d+\.\d+ \(Mac OS \d+\.\d+\.\d+; (x86_64|arm64)\) (\S+)$"
-        ))
-        .unwrap();
-        assert!(re.is_match(&user_agent));
+        let build_version = env!("CARGO_PKG_VERSION");
+        let os_info = os_info::get();
+        let arch = os_info.architecture().unwrap_or("unknown");
+        let expected_prefix = format!(
+            "{}/{build_version} ({} {}; {arch}) ",
+            originator().value.as_str(),
+            os_info.os_type(),
+            os_info.version(),
+        );
+        let suffix = user_agent
+            .strip_prefix(&expected_prefix)
+            .expect("user agent should start with expected macOS prefix");
+        assert!(!suffix.is_empty());
+        assert_eq!(suffix.split_whitespace().count(), 1);
     }
 }
