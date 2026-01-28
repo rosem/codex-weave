@@ -74,6 +74,8 @@ use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::user_input::TextElement;
 use codex_protocol::user_input::UserInput;
 use codex_protocol::weave::WeaveRelayDoneRequest;
+use codex_protocol::weave::WeaveRelayOutput;
+use codex_protocol::weave::WeaveRelayRequestEvent;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -362,6 +364,7 @@ async fn interrupted_turn_restores_queued_messages_with_images_and_elements() {
             path: first_images[0].clone(),
         }],
         text_elements: first_elements,
+        source: UserMessageSource::Local,
     });
     chat.queued_user_messages.push_back(UserMessage {
         text: second_text,
@@ -370,6 +373,7 @@ async fn interrupted_turn_restores_queued_messages_with_images_and_elements() {
             path: second_images[0].clone(),
         }],
         text_elements: second_elements,
+        source: UserMessageSource::Local,
     });
     chat.refresh_queued_user_messages();
 
@@ -449,6 +453,7 @@ async fn remap_placeholders_uses_attachment_labels() {
         text,
         text_elements: elements,
         local_images: attachments,
+        source: UserMessageSource::Local,
     };
     let mut next_label = 3usize;
     let remapped = remap_placeholders_for_message(message, &mut next_label);
@@ -509,6 +514,7 @@ async fn remap_placeholders_uses_byte_ranges_when_placeholder_missing() {
         text,
         text_elements: elements,
         local_images: attachments,
+        source: UserMessageSource::Local,
     };
     let mut next_label = 3usize;
     let remapped = remap_placeholders_for_message(message, &mut next_label);
@@ -4623,6 +4629,121 @@ async fn weave_message_accepts_missing_task_id() {
     );
 }
 
+#[tokio::test]
+async fn weave_relay_reply_is_prioritized_in_queue() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+    chat.selected_weave_session_id = Some("session-1".to_string());
+    chat.weave_agent_id = "lead".to_string();
+    chat.weave_agent_name = "lead".to_string();
+    let agents = vec![WeaveAgent {
+        id: "agent-b".to_string(),
+        name: Some("agent-b".to_string()),
+    }];
+    chat.weave_agents = Some(agents.clone());
+    chat.bottom_pane.set_weave_agents(Some(agents.clone()));
+    let relay_targets =
+        WeaveRelayTargets::new(chat.weave_agent_id.clone(), new_weave_relay_id(), &agents);
+    chat.active_weave_relay = Some(relay_targets);
+    chat.weave_target_states.insert(
+        "agent-b".to_string(),
+        WeaveRelayTargetState::new("ctx-1".to_string(), "task-1".to_string()),
+    );
+    chat.queued_user_messages
+        .push_back(UserMessage::from("queued local".to_string()));
+    chat.refresh_queued_user_messages();
+
+    chat.on_weave_message_received(WeaveIncomingMessage {
+        session_id: "session-1".to_string(),
+        message_id: "msg-1".to_string(),
+        src: "agent-b".to_string(),
+        src_name: Some("agent-b".to_string()),
+        meta: None,
+        text: "7".to_string(),
+        kind: WeaveMessageKind::Reply,
+        conversation_id: "ctx-1".to_string(),
+        conversation_owner: "lead".to_string(),
+        parent_message_id: None,
+        task_id: Some("task-1".to_string()),
+        tool: None,
+        action_group_id: Some("group-1".to_string()),
+        action_id: Some("action-1".to_string()),
+        action_index: Some(0),
+        reply_to_action_id: None,
+        action_result: None,
+        task_update: None,
+        task_done: None,
+        relay_done: None,
+        defer_until_ready: false,
+        has_conversation_metadata: true,
+    });
+
+    assert!(chat.pending_weave_reply_resume);
+    assert_eq!(chat.queued_user_messages.len(), 2);
+    assert_eq!(chat.queued_user_messages.front().unwrap().text, "7");
+}
+
+#[tokio::test]
+async fn weave_relay_reply_preserves_fifo_order_in_queue() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+    chat.selected_weave_session_id = Some("session-1".to_string());
+    chat.weave_agent_id = "lead".to_string();
+    chat.weave_agent_name = "lead".to_string();
+    let agents = vec![WeaveAgent {
+        id: "agent-b".to_string(),
+        name: Some("agent-b".to_string()),
+    }];
+    chat.weave_agents = Some(agents.clone());
+    chat.bottom_pane.set_weave_agents(Some(agents.clone()));
+    let relay_targets =
+        WeaveRelayTargets::new(chat.weave_agent_id.clone(), new_weave_relay_id(), &agents);
+    chat.active_weave_relay = Some(relay_targets);
+    chat.weave_target_states.insert(
+        "agent-b".to_string(),
+        WeaveRelayTargetState::new("ctx-1".to_string(), "task-1".to_string()),
+    );
+    chat.queued_user_messages
+        .push_back(UserMessage::from("queued local".to_string()));
+    chat.refresh_queued_user_messages();
+
+    let make_reply =
+        |message_id: &str, action_id: &str, text: &str, action_index: usize| WeaveIncomingMessage {
+            session_id: "session-1".to_string(),
+            message_id: message_id.to_string(),
+            src: "agent-b".to_string(),
+            src_name: Some("agent-b".to_string()),
+            meta: None,
+            text: text.to_string(),
+            kind: WeaveMessageKind::Reply,
+            conversation_id: "ctx-1".to_string(),
+            conversation_owner: "lead".to_string(),
+            parent_message_id: None,
+            task_id: Some("task-1".to_string()),
+            tool: None,
+            action_group_id: Some("group-1".to_string()),
+            action_id: Some(action_id.to_string()),
+            action_index: Some(action_index),
+            reply_to_action_id: None,
+            action_result: None,
+            task_update: None,
+            task_done: None,
+            relay_done: None,
+            defer_until_ready: false,
+            has_conversation_metadata: true,
+        };
+
+    chat.on_weave_message_received(make_reply("msg-1", "action-1", "7", 0));
+    chat.on_weave_message_received(make_reply("msg-2", "action-2", "8", 1));
+
+    assert!(chat.pending_weave_reply_resume);
+    assert_eq!(chat.queued_user_messages.len(), 3);
+    let mut queued = chat.queued_user_messages.iter();
+    assert_eq!(queued.next().unwrap().text, "7");
+    assert_eq!(queued.next().unwrap().text, "8");
+    assert_eq!(queued.next().unwrap().text, "queued local");
+}
+
 #[test]
 fn parse_weave_relay_output_actions() {
     let payload = r#"{"type":"relay_actions","actions":[{"type":"message","dst":"agent-a","plan_step_id":"step_1","text":"Tell a joke","expects_reply":true},{"type":"control","dst":"agent-b","plan_step_id":"step_2","command":"new"}]}"#;
@@ -4633,11 +4754,24 @@ fn parse_weave_relay_output_actions() {
             assert_eq!(dst, "agent-a");
             assert_eq!(text, "Tell a joke");
             assert!(plan.is_none());
-            assert_eq!(expects_reply, &Some(true));
+            assert_eq!(*expects_reply, Some(true));
         });
         assert_matches!(&actions[1], WeaveRelayAction::Control { dst, command, .. } => {
             assert_eq!(dst, "agent-b");
             assert_matches!(command, WeaveRelayCommand::New);
+        });
+    });
+}
+
+#[test]
+fn parse_weave_relay_output_wait_action() {
+    let payload = r#"{"type":"relay_actions","actions":[{"type":"wait","plan_step_id":"step_1","targets":["agent-a","agent-b"]}]}"#;
+    let output = codex_protocol::weave::parse_weave_relay_output(payload).expect("output");
+    assert_matches!(output, WeaveRelayOutput::RelayActions { actions, .. } => {
+        assert_eq!(actions.len(), 1);
+        assert_matches!(&actions[0], WeaveRelayAction::Wait { targets, plan_step_id } => {
+            assert_eq!(plan_step_id, "step_1");
+            assert_eq!(targets, &vec!["agent-a".to_string(), "agent-b".to_string()]);
         });
     });
 }
@@ -4685,9 +4819,33 @@ fn parse_weave_relay_output_allows_missing_expects_reply() {
     assert_matches!(output, WeaveRelayOutput::RelayActions { actions, .. } => {
         assert_eq!(actions.len(), 1);
         assert_matches!(&actions[0], WeaveRelayAction::Message { expects_reply, .. } => {
-            assert_eq!(expects_reply, &None);
+            assert_eq!(*expects_reply, None);
         });
     });
+}
+
+#[tokio::test]
+async fn weave_relay_plain_text_is_rejected() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let agents = vec![WeaveAgent {
+        id: "agent-a".to_string(),
+        name: None,
+    }];
+    chat.weave_agents = Some(agents.clone());
+    let targets =
+        WeaveRelayTargets::new(chat.weave_agent_id.clone(), new_weave_relay_id(), &agents);
+    chat.pending_weave_relay = Some(targets.clone());
+    chat.active_weave_relay = Some(targets.clone());
+
+    let handled = chat.handle_weave_relay_output("Final plan text");
+
+    assert_eq!(handled, true);
+    assert!(chat.pending_weave_relay.is_none());
+    assert!(
+        chat.active_weave_relay
+            .as_ref()
+            .is_some_and(|active| active.matches(&targets))
+    );
 }
 
 #[tokio::test]
@@ -4711,6 +4869,105 @@ async fn weave_relay_rejects_missing_expects_reply() {
         .validate_relay_actions_scope(&actions, &targets)
         .expect_err("expected expects_reply validation error");
     assert!(err.contains("expects_reply"));
+}
+
+#[tokio::test]
+async fn weave_relay_request_returns_error_without_connection() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    let agents = vec![WeaveAgent {
+        id: "agent-a".to_string(),
+        name: None,
+    }];
+    chat.weave_agents = Some(agents.clone());
+    let targets =
+        WeaveRelayTargets::new(chat.weave_agent_id.clone(), new_weave_relay_id(), &agents);
+    chat.active_weave_relay = Some(targets.clone());
+
+    let ev = WeaveRelayRequestEvent {
+        call_id: "call-1".to_string(),
+        turn_id: "turn-1".to_string(),
+        relay_id: targets.relay_id.clone(),
+        actions: Vec::new(),
+        done: Some(WeaveRelayDoneRequest::Summary {
+            summary: Some("summary".to_string()),
+        }),
+    };
+
+    chat.handle_weave_relay_request_now(ev);
+
+    let op = op_rx.try_recv().expect("expected op");
+    match op {
+        Op::WeaveRelayResponse { id, result } => {
+            assert_eq!(id, "turn-1");
+            assert_eq!(result.status, "error");
+            assert_eq!(
+                result.detail.as_deref(),
+                Some("Weave session isn't connected.")
+            );
+        }
+        other => panic!("expected WeaveRelayResponse, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn weave_relay_request_rejects_empty_actions_without_done() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    let agents = vec![WeaveAgent {
+        id: "agent-a".to_string(),
+        name: None,
+    }];
+    chat.weave_agents = Some(agents.clone());
+    let targets =
+        WeaveRelayTargets::new(chat.weave_agent_id.clone(), new_weave_relay_id(), &agents);
+    chat.active_weave_relay = Some(targets.clone());
+
+    let ev = WeaveRelayRequestEvent {
+        call_id: "call-2".to_string(),
+        turn_id: "turn-2".to_string(),
+        relay_id: targets.relay_id.clone(),
+        actions: Vec::new(),
+        done: None,
+    };
+
+    chat.handle_weave_relay_request_now(ev);
+
+    let op = op_rx.try_recv().expect("expected op");
+    match op {
+        Op::WeaveRelayResponse { id, result } => {
+            assert_eq!(id, "turn-2");
+            assert_eq!(result.status, "error");
+            assert_eq!(
+                result.detail.as_deref(),
+                Some("Weave relay actions cannot be empty unless done is set.")
+            );
+        }
+        other => panic!("expected WeaveRelayResponse, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn weave_relay_actions_error_when_no_dispatch() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let agents = vec![WeaveAgent {
+        id: "agent-a".to_string(),
+        name: None,
+    }];
+    chat.weave_agents = Some(agents.clone());
+    let targets =
+        WeaveRelayTargets::new(chat.weave_agent_id.clone(), new_weave_relay_id(), &agents);
+
+    let actions = vec![WeaveRelayAction::Message {
+        dst: "agent-a".to_string(),
+        text: "   ".to_string(),
+        expects_reply: Some(true),
+        plan_step_id: "step_1".to_string(),
+        plan: None,
+    }];
+
+    let err = chat
+        .apply_weave_relay_actions(&targets, actions)
+        .expect_err("expected relay actions to fail");
+    assert_eq!(err, "Weave relay actions did not dispatch any messages.");
 }
 
 #[tokio::test]

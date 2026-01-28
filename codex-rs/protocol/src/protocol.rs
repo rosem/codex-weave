@@ -48,6 +48,8 @@ pub use crate::approvals::ElicitationAction;
 pub use crate::approvals::ExecApprovalRequestEvent;
 pub use crate::approvals::ExecPolicyAmendment;
 pub use crate::request_user_input::RequestUserInputEvent;
+pub use crate::weave::WeaveRelayRequestEvent;
+pub use crate::weave::WeaveRelayToolResult;
 
 /// Open/close tags for special user-input blocks. Used across crates to avoid
 /// duplicated hardcoded strings.
@@ -214,6 +216,15 @@ pub enum Op {
         id: String,
         /// User-provided answers.
         response: RequestUserInputResponse,
+    },
+
+    /// Resolve a weave_relay_actions tool call.
+    #[serde(rename = "weave_relay_response")]
+    WeaveRelayResponse {
+        /// Turn id for the in-flight request.
+        id: String,
+        /// Result of the relay request.
+        result: WeaveRelayToolResult,
     },
 
     /// Append an entry to the persistent cross-session message history.
@@ -749,6 +760,8 @@ pub enum EventMsg {
     ExecApprovalRequest(ExecApprovalRequestEvent),
 
     RequestUserInput(RequestUserInputEvent),
+
+    WeaveRelayRequest(WeaveRelayRequestEvent),
 
     ElicitationRequest(ElicitationRequestEvent),
 

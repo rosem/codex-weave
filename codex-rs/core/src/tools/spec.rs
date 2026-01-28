@@ -617,6 +617,130 @@ fn create_request_user_input_tool() -> ToolSpec {
     })
 }
 
+fn create_weave_relay_tool() -> ToolSpec {
+    let mut plan_props = BTreeMap::new();
+    plan_props.insert(
+        "steps".to_string(),
+        JsonSchema::Array {
+            description: Some(
+                "Ordered plan steps. Use when a plan is requested and include in the first action."
+                    .to_string(),
+            ),
+            items: Box::new(JsonSchema::String { description: None }),
+        },
+    );
+    plan_props.insert(
+        "note".to_string(),
+        JsonSchema::String {
+            description: Some("Optional plan note or context.".to_string()),
+        },
+    );
+    let plan_schema = JsonSchema::Object {
+        properties: plan_props,
+        required: Some(vec!["steps".to_string()]),
+        additional_properties: Some(false.into()),
+    };
+
+    let mut action_props = BTreeMap::new();
+    action_props.insert(
+        "type".to_string(),
+        JsonSchema::String {
+            description: Some("Action type: message, control, or wait.".to_string()),
+        },
+    );
+    action_props.insert(
+        "dst".to_string(),
+        JsonSchema::String {
+            description: Some("Weave agent id or name (without #).".to_string()),
+        },
+    );
+    action_props.insert(
+        "targets".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::String {
+                description: Some("Weave agent id or name (without #).".to_string()),
+            }),
+            description: Some("Weave agent ids for wait actions.".to_string()),
+        },
+    );
+    action_props.insert(
+        "plan_step_id".to_string(),
+        JsonSchema::String {
+            description: Some("Plan step id (step_1, step_2, ...).".to_string()),
+        },
+    );
+    action_props.insert(
+        "text".to_string(),
+        JsonSchema::String {
+            description: Some("Message text (required for message actions).".to_string()),
+        },
+    );
+    action_props.insert(
+        "expects_reply".to_string(),
+        JsonSchema::Boolean {
+            description: Some(
+                "Whether the target should reply (message actions only).".to_string(),
+            ),
+        },
+    );
+    action_props.insert("plan".to_string(), plan_schema);
+    action_props.insert(
+        "command".to_string(),
+        JsonSchema::String {
+            description: Some("Control command: new, compact, interrupt, or review.".to_string()),
+        },
+    );
+    action_props.insert(
+        "args".to_string(),
+        JsonSchema::String {
+            description: Some("Optional args (only supported for review).".to_string()),
+        },
+    );
+
+    let actions_schema = JsonSchema::Array {
+        description: Some("Relay actions to send to weave targets.".to_string()),
+        items: Box::new(JsonSchema::Object {
+            properties: action_props,
+            required: Some(vec!["type".to_string(), "plan_step_id".to_string()]),
+            additional_properties: Some(false.into()),
+        }),
+    };
+
+    let mut done_props = BTreeMap::new();
+    done_props.insert(
+        "summary".to_string(),
+        JsonSchema::String {
+            description: Some("Optional relay completion summary.".to_string()),
+        },
+    );
+    let done_schema = JsonSchema::Object {
+        properties: done_props,
+        required: None,
+        additional_properties: Some(false.into()),
+    };
+
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "relay_id".to_string(),
+        JsonSchema::String {
+            description: Some("Relay identifier for the active weave task.".to_string()),
+        },
+    );
+    properties.insert("actions".to_string(), actions_schema);
+    properties.insert("done".to_string(), done_schema);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "weave_relay_actions".to_string(),
+        description: "Submit relay actions for an active weave task.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["relay_id".to_string(), "actions".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
 fn create_close_agent_tool() -> ToolSpec {
     let mut properties = BTreeMap::new();
     properties.insert(
@@ -1231,6 +1355,7 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::TestSyncHandler;
     use crate::tools::handlers::UnifiedExecHandler;
     use crate::tools::handlers::ViewImageHandler;
+    use crate::tools::handlers::WeaveRelayHandler;
     use std::sync::Arc;
 
     let mut builder = ToolRegistryBuilder::new();
@@ -1244,6 +1369,7 @@ pub(crate) fn build_specs(
     let mcp_resource_handler = Arc::new(McpResourceHandler);
     let shell_command_handler = Arc::new(ShellCommandHandler);
     let request_user_input_handler = Arc::new(RequestUserInputHandler);
+    let weave_relay_handler = Arc::new(WeaveRelayHandler);
 
     match &config.shell_type {
         ConfigShellToolType::Default => {
@@ -1288,6 +1414,9 @@ pub(crate) fn build_specs(
         builder.push_spec(create_request_user_input_tool());
         builder.register_handler("request_user_input", request_user_input_handler);
     }
+
+    builder.push_spec(create_weave_relay_tool());
+    builder.register_handler("weave_relay_actions", weave_relay_handler);
 
     if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
         match apply_patch_tool_type {
@@ -1524,6 +1653,7 @@ mod tests {
             create_read_mcp_resource_tool(),
             PLAN_TOOL.clone(),
             create_request_user_input_tool(),
+            create_weave_relay_tool(),
             create_apply_patch_freeform_tool(),
             ToolSpec::WebSearch {
                 external_web_access: Some(true),
@@ -1671,6 +1801,7 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "request_user_input",
+                "weave_relay_actions",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1693,6 +1824,7 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "request_user_input",
+                "weave_relay_actions",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1717,6 +1849,7 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "request_user_input",
+                "weave_relay_actions",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1741,6 +1874,7 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "request_user_input",
+                "weave_relay_actions",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1763,6 +1897,7 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "request_user_input",
+                "weave_relay_actions",
                 "web_search",
                 "view_image",
             ],
@@ -1784,6 +1919,7 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "request_user_input",
+                "weave_relay_actions",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1806,6 +1942,7 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "request_user_input",
+                "weave_relay_actions",
                 "web_search",
                 "view_image",
             ],
@@ -1827,6 +1964,7 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "request_user_input",
+                "weave_relay_actions",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1850,6 +1988,7 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "request_user_input",
+                "weave_relay_actions",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1874,6 +2013,7 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "request_user_input",
+                "weave_relay_actions",
                 "web_search",
                 "view_image",
             ],

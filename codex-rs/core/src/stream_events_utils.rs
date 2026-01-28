@@ -10,11 +10,15 @@ use crate::error::CodexErr;
 use crate::error::Result;
 use crate::function_tool::FunctionCallError;
 use crate::parse_turn_item;
+use crate::tools::context::ToolPayload;
 use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::router::ToolRouter;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::weave::WeaveRelayAction;
+use codex_protocol::weave::WeaveRelayDoneRequest;
+use codex_protocol::weave::WeaveRelayToolArgs;
 use futures::Future;
 use tracing::debug;
 use tracing::instrument;
@@ -57,6 +61,12 @@ pub(crate) async fn handle_output_item_done(
                 .record_conversation_items(&ctx.turn_context, std::slice::from_ref(&item))
                 .await;
 
+            let is_weave_relay = call.tool_name == "weave_relay_actions";
+            let needs_follow_up = if is_weave_relay {
+                weave_relay_needs_follow_up(&call.payload)
+            } else {
+                true
+            };
             let cancellation_token = ctx.cancellation_token.child_token();
             let tool_future: InFlightFuture<'static> = Box::pin(
                 ctx.tool_runtime
@@ -64,7 +74,7 @@ pub(crate) async fn handle_output_item_done(
                     .handle_tool_call(call, cancellation_token),
             );
 
-            output.needs_follow_up = true;
+            output.needs_follow_up = needs_follow_up;
             output.tool_future = Some(tool_future);
         }
         // No tool call: convert messages/reasoning into turn items and mark them as complete.
@@ -148,6 +158,39 @@ pub(crate) async fn handle_output_item_done(
     }
 
     Ok(output)
+}
+
+fn weave_relay_needs_follow_up(payload: &ToolPayload) -> bool {
+    let ToolPayload::Function { arguments } = payload else {
+        return true;
+    };
+    let Ok(args) = serde_json::from_str::<WeaveRelayToolArgs>(arguments) else {
+        return true;
+    };
+    if args
+        .done
+        .as_ref()
+        .is_some_and(WeaveRelayDoneRequest::is_requested)
+    {
+        return false;
+    }
+    let mut has_actions = false;
+    for action in &args.actions {
+        has_actions = true;
+        match action {
+            WeaveRelayAction::Wait { .. } => return false,
+            WeaveRelayAction::Message { expects_reply, .. } => {
+                if expects_reply.unwrap_or(false) {
+                    return false;
+                }
+            }
+            WeaveRelayAction::Control { .. } => {}
+        }
+    }
+    if !has_actions {
+        return true;
+    }
+    true
 }
 
 pub(crate) async fn handle_non_tool_response_item(item: &ResponseItem) -> Option<TurnItem> {

@@ -124,12 +124,12 @@ pub(crate) fn reset_mode_after_activity(current: FooterMode) -> FooterMode {
     }
 }
 
-pub(crate) fn footer_height(props: FooterProps) -> u16 {
+pub(crate) fn footer_height(props: &FooterProps) -> u16 {
     footer_lines(props).len() as u16
 }
 
-pub(crate) fn render_footer(area: Rect, buf: &mut Buffer, props: FooterProps) {
-    let mut lines = footer_lines(props.clone());
+pub(crate) fn render_footer(area: Rect, buf: &mut Buffer, props: &FooterProps) {
+    let mut lines = footer_lines(props);
     if let Some(label) = props.weave_session_label.as_deref() {
         append_session_indicator(&mut lines, area.width, label);
     }
@@ -191,7 +191,7 @@ pub(crate) fn render_footer_hint_items(area: Rect, buf: &mut Buffer, items: &[(S
     footer_hint_items_line(items).render(inset_footer_hint_area(area), buf);
 }
 
-fn footer_lines(props: FooterProps) -> Vec<Line<'static>> {
+fn footer_lines(props: &FooterProps) -> Vec<Line<'static>> {
     // Show the context indicator on the left, appended after the primary hint
     // (e.g., "? for shortcuts"). Keep it visible even when typing (i.e., when
     // the shortcut hint is hidden). Hide it only for the multi-line
@@ -242,7 +242,7 @@ fn footer_lines(props: FooterProps) -> Vec<Line<'static>> {
     }
 }
 
-pub(crate) fn footer_line_width(props: FooterProps) -> u16 {
+pub(crate) fn footer_line_width(props: &FooterProps) -> u16 {
     footer_lines(props)
         .last()
         .map(|line| line.width() as u16)
@@ -669,12 +669,12 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     fn snapshot_footer(name: &str, props: FooterProps) {
-        let height = footer_height(props.clone()).max(1);
+        let height = footer_height(&props).max(1);
         let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
         terminal
             .draw(|f| {
                 let area = Rect::new(0, 0, f.area().width, height);
-                render_footer(area, f.buffer_mut(), props);
+                render_footer(area, f.buffer_mut(), &props);
             })
             .unwrap();
         assert_snapshot!(name, terminal.backend());
@@ -686,17 +686,17 @@ mod tests {
         props: FooterProps,
         indicator: Option<CollaborationModeIndicator>,
     ) {
-        let height = footer_height(props).max(1);
+        let height = footer_height(&props).max(1);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|f| {
                 let area = Rect::new(0, 0, f.area().width, height);
-                render_footer(area, f.buffer_mut(), props);
+                render_footer(area, f.buffer_mut(), &props);
                 render_mode_indicator(
                     area,
                     f.buffer_mut(),
                     indicator,
-                    Some(footer_line_width(props)),
+                    Some(footer_line_width(&props)),
                 );
             })
             .unwrap();
@@ -891,12 +891,13 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: None,
             context_window_used_tokens: None,
+            weave_session_label: None,
         };
 
         snapshot_footer_with_indicator(
             "footer_mode_indicator_wide",
             120,
-            props,
+            props.clone(),
             Some(CollaborationModeIndicator::Plan),
         );
 

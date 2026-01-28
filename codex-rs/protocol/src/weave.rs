@@ -15,6 +15,35 @@ pub enum WeaveRelayOutput {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct WeaveRelayToolArgs {
+    pub relay_id: String,
+    pub actions: Vec<WeaveRelayAction>,
+    #[serde(default)]
+    pub done: Option<WeaveRelayDoneRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq, Eq)]
+pub struct WeaveRelayToolResult {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct WeaveRelayRequestEvent {
+    /// Responses API call id for the associated tool call, if available.
+    pub call_id: String,
+    /// Turn ID that this request belongs to.
+    /// Uses `#[serde(default)]` for backwards compatibility.
+    #[serde(default)]
+    pub turn_id: String,
+    pub relay_id: String,
+    pub actions: Vec<WeaveRelayAction>,
+    #[serde(default)]
+    pub done: Option<WeaveRelayDoneRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(untagged)]
 pub enum WeaveRelayDoneRequest {
     Flag(bool),
@@ -63,6 +92,11 @@ pub enum WeaveRelayAction {
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
         args: Option<String>,
+    },
+    Wait {
+        targets: Vec<String>,
+        #[serde(default)]
+        plan_step_id: String,
     },
 }
 

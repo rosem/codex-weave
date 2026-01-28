@@ -53,6 +53,9 @@ use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::request_user_input::RequestUserInputArgs;
 use codex_protocol::request_user_input::RequestUserInputResponse;
+use codex_protocol::weave::WeaveRelayRequestEvent;
+use codex_protocol::weave::WeaveRelayToolArgs;
+use codex_protocol::weave::WeaveRelayToolResult;
 use codex_rmcp_client::ElicitationResponse;
 use codex_rmcp_client::OAuthCredentialsStoreMode;
 use futures::future::BoxFuture;
@@ -1421,6 +1424,40 @@ impl Session {
         rx_response.await.ok()
     }
 
+    pub async fn request_weave_relay(
+        &self,
+        turn_context: &TurnContext,
+        call_id: String,
+        args: WeaveRelayToolArgs,
+    ) -> Option<WeaveRelayToolResult> {
+        let sub_id = turn_context.sub_id.clone();
+        let (tx_response, rx_response) = oneshot::channel();
+        let event_id = sub_id.clone();
+        let prev_entry = {
+            let mut active = self.active_turn.lock().await;
+            match active.as_mut() {
+                Some(at) => {
+                    let mut ts = at.turn_state.lock().await;
+                    ts.insert_pending_weave_relay(sub_id, tx_response)
+                }
+                None => None,
+            }
+        };
+        if prev_entry.is_some() {
+            warn!("Overwriting existing pending weave relay for sub_id: {event_id}");
+        }
+
+        let event = EventMsg::WeaveRelayRequest(WeaveRelayRequestEvent {
+            call_id,
+            turn_id: turn_context.sub_id.clone(),
+            relay_id: args.relay_id,
+            actions: args.actions,
+            done: args.done,
+        });
+        self.send_event(turn_context, event).await;
+        rx_response.await.ok()
+    }
+
     pub async fn notify_user_input_response(
         &self,
         sub_id: &str,
@@ -1442,6 +1479,27 @@ impl Session {
             }
             None => {
                 warn!("No pending user input found for sub_id: {sub_id}");
+            }
+        }
+    }
+
+    pub async fn notify_weave_relay_response(&self, sub_id: &str, response: WeaveRelayToolResult) {
+        let entry = {
+            let mut active = self.active_turn.lock().await;
+            match active.as_mut() {
+                Some(at) => {
+                    let mut ts = at.turn_state.lock().await;
+                    ts.remove_pending_weave_relay(sub_id)
+                }
+                None => None,
+            }
+        };
+        match entry {
+            Some(tx_response) => {
+                tx_response.send(response).ok();
+            }
+            None => {
+                warn!("No pending weave relay found for sub_id: {sub_id}");
             }
         }
     }
@@ -2099,6 +2157,9 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
             Op::UserInputAnswer { id, response } => {
                 handlers::request_user_input_response(&sess, id, response).await;
             }
+            Op::WeaveRelayResponse { id, result } => {
+                handlers::weave_relay_response(&sess, id, result).await;
+            }
             Op::AddToHistory { text } => {
                 handlers::add_to_history(&sess, &config, text).await;
             }
@@ -2189,6 +2250,7 @@ mod handlers {
     use codex_protocol::protocol::TurnAbortReason;
     use codex_protocol::protocol::WarningEvent;
     use codex_protocol::request_user_input::RequestUserInputResponse;
+    use codex_protocol::weave::WeaveRelayToolResult;
 
     use crate::context_manager::is_user_turn_boundary;
     use codex_protocol::config_types::CollaborationMode;
@@ -2425,6 +2487,14 @@ mod handlers {
         response: RequestUserInputResponse,
     ) {
         sess.notify_user_input_response(&id, response).await;
+    }
+
+    pub async fn weave_relay_response(
+        sess: &Arc<Session>,
+        id: String,
+        result: WeaveRelayToolResult,
+    ) {
+        sess.notify_weave_relay_response(&id, result).await;
     }
 
     pub async fn add_to_history(sess: &Arc<Session>, config: &Arc<Config>, text: String) {
