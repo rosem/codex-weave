@@ -494,14 +494,13 @@ pub fn ev_reasoning_text_delta(delta: &str) -> Value {
     })
 }
 
-pub fn ev_web_search_call_added(id: &str, status: &str, query: &str) -> Value {
+pub fn ev_web_search_call_added_partial(id: &str, status: &str) -> Value {
     serde_json::json!({
         "type": "response.output_item.added",
         "item": {
             "type": "web_search_call",
             "id": id,
-            "status": status,
-            "action": {"type": "search", "query": query}
+            "status": status
         }
     })
 }
@@ -930,7 +929,7 @@ pub async fn start_websocket_server_with_headers(
                     let Ok(payload) = serde_json::to_string(event) else {
                         continue;
                     };
-                    if ws_stream.send(Message::Text(payload)).await.is_err() {
+                    if ws_stream.send(Message::Text(payload.into())).await.is_err() {
                         break;
                     }
                 }

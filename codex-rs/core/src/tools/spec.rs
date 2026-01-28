@@ -8,8 +8,10 @@ use crate::tools::handlers::apply_patch::create_apply_patch_freeform_tool;
 use crate::tools::handlers::apply_patch::create_apply_patch_json_tool;
 use crate::tools::handlers::collab::DEFAULT_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::collab::MAX_WAIT_TIMEOUT_MS;
+use crate::tools::handlers::collab::MIN_WAIT_TIMEOUT_MS;
 use crate::tools::registry::ToolRegistryBuilder;
 use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::VIEW_IMAGE_TOOL_NAME;
 use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
@@ -25,7 +27,7 @@ use std::collections::HashMap;
 pub(crate) struct ToolsConfig {
     pub shell_type: ConfigShellToolType,
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
-    pub web_search_mode: Option<WebSearchMode>,
+    pub web_search_mode: WebSearchMode,
     pub collab_tools: bool,
     pub collaboration_modes_tools: bool,
     pub experimental_supported_tools: Vec<String>,
@@ -34,7 +36,7 @@ pub(crate) struct ToolsConfig {
 pub(crate) struct ToolsConfigParams<'a> {
     pub(crate) model_info: &'a ModelInfo,
     pub(crate) features: &'a Features,
-    pub(crate) web_search_mode: Option<WebSearchMode>,
+    pub(crate) web_search_mode: WebSearchMode,
 }
 
 impl ToolsConfig {
@@ -87,7 +89,7 @@ impl ToolsConfig {
 /// Generic JSON‑Schema subset needed for our tool definitions
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub(crate) enum JsonSchema {
+pub enum JsonSchema {
     Boolean {
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
@@ -123,7 +125,7 @@ pub(crate) enum JsonSchema {
 /// Whether additional properties are allowed, and if so, any required schema
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
-pub(crate) enum AdditionalProperties {
+pub enum AdditionalProperties {
     Boolean(bool),
     Schema(Box<JsonSchema>),
 }
@@ -516,7 +518,7 @@ fn create_wait_tool() -> ToolSpec {
         "timeout_ms".to_string(),
         JsonSchema::Number {
             description: Some(format!(
-                "Optional timeout in milliseconds. Defaults to {DEFAULT_WAIT_TIMEOUT_MS} and max {MAX_WAIT_TIMEOUT_MS}."
+                "Optional timeout in milliseconds. Defaults to {DEFAULT_WAIT_TIMEOUT_MS}, min {MIN_WAIT_TIMEOUT_MS}, and max {MAX_WAIT_TIMEOUT_MS}. Avoid tight polling loops; prefer longer waits (seconds to minutes)."
             )),
         },
     );
@@ -554,7 +556,7 @@ fn create_request_user_input_tool() -> ToolSpec {
 
     let options_schema = JsonSchema::Array {
         description: Some(
-            "Optional 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \"(Recommended)\". Only include \"Other\" option if we want to include a free form option. If the question is free form in nature, please do not have any option."
+            "Optional 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \"(Recommended)\". Do not include an \"Other\" option in this list; use isOther on the question to request a free form choice. If the question is free form in nature, please do not have any option."
                 .to_string(),
         ),
         items: Box::new(JsonSchema::Object {
@@ -585,6 +587,15 @@ fn create_request_user_input_tool() -> ToolSpec {
             description: Some("Single-sentence prompt shown to the user.".to_string()),
         },
     );
+    question_props.insert(
+        "isOther".to_string(),
+        JsonSchema::Boolean {
+            description: Some(
+                "True when this question should include a free-form \"Other\" option. Otherwise false."
+                    .to_string(),
+            ),
+        },
+    );
     question_props.insert("options".to_string(), options_schema);
 
     let questions_schema = JsonSchema::Array {
@@ -595,6 +606,7 @@ fn create_request_user_input_tool() -> ToolSpec {
                 "id".to_string(),
                 "header".to_string(),
                 "question".to_string(),
+                "isOther".to_string(),
             ]),
             additional_properties: Some(false.into()),
         }),
@@ -1225,6 +1237,26 @@ pub(crate) fn mcp_tool_to_openai_tool(
     })
 }
 
+fn dynamic_tool_to_openai_tool(
+    tool: &DynamicToolSpec,
+) -> Result<ResponsesApiTool, serde_json::Error> {
+    let input_schema = parse_tool_input_schema(&tool.input_schema)?;
+
+    Ok(ResponsesApiTool {
+        name: tool.name.clone(),
+        description: tool.description.clone(),
+        strict: false,
+        parameters: input_schema,
+    })
+}
+
+/// Parse the tool input_schema or return an error for invalid schema
+pub fn parse_tool_input_schema(input_schema: &JsonValue) -> Result<JsonSchema, serde_json::Error> {
+    let mut input_schema = input_schema.clone();
+    sanitize_json_schema(&mut input_schema);
+    serde_json::from_value::<JsonSchema>(input_schema)
+}
+
 /// Sanitize a JSON Schema (as serde_json::Value) so it can fit our limited
 /// JsonSchema enum. This function:
 /// - Ensures every schema object has a "type". If missing, infers it from
@@ -1340,9 +1372,11 @@ fn sanitize_json_schema(value: &mut JsonValue) {
 pub(crate) fn build_specs(
     config: &ToolsConfig,
     mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
+    dynamic_tools: &[DynamicToolSpec],
 ) -> ToolRegistryBuilder {
     use crate::tools::handlers::ApplyPatchHandler;
     use crate::tools::handlers::CollabHandler;
+    use crate::tools::handlers::DynamicToolHandler;
     use crate::tools::handlers::GrepFilesHandler;
     use crate::tools::handlers::ListDirHandler;
     use crate::tools::handlers::McpHandler;
@@ -1364,6 +1398,7 @@ pub(crate) fn build_specs(
     let unified_exec_handler = Arc::new(UnifiedExecHandler);
     let plan_handler = Arc::new(PlanHandler);
     let apply_patch_handler = Arc::new(ApplyPatchHandler);
+    let dynamic_tool_handler = Arc::new(DynamicToolHandler);
     let view_image_handler = Arc::new(ViewImageHandler);
     let mcp_handler = Arc::new(McpHandler);
     let mcp_resource_handler = Arc::new(McpResourceHandler);
@@ -1468,17 +1503,17 @@ pub(crate) fn build_specs(
     }
 
     match config.web_search_mode {
-        Some(WebSearchMode::Cached) => {
+        WebSearchMode::Cached => {
             builder.push_spec(ToolSpec::WebSearch {
                 external_web_access: Some(false),
             });
         }
-        Some(WebSearchMode::Live) => {
+        WebSearchMode::Live => {
             builder.push_spec(ToolSpec::WebSearch {
                 external_web_access: Some(true),
             });
         }
-        Some(WebSearchMode::Disabled) | None => {}
+        WebSearchMode::Disabled => {}
     }
 
     builder.push_spec_with_parallel_support(create_view_image_tool(), true);
@@ -1508,6 +1543,23 @@ pub(crate) fn build_specs(
                 }
                 Err(e) => {
                     tracing::error!("Failed to convert {name:?} MCP tool to OpenAI tool: {e:?}");
+                }
+            }
+        }
+    }
+
+    if !dynamic_tools.is_empty() {
+        for tool in dynamic_tools {
+            match dynamic_tool_to_openai_tool(tool) {
+                Ok(converted_tool) => {
+                    builder.push_spec(ToolSpec::Function(converted_tool));
+                    builder.register_handler(tool.name.clone(), dynamic_tool_handler.clone());
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to convert dynamic tool {:?} to OpenAI tool: {e:?}",
+                        tool.name
+                    );
                 }
             }
         }
@@ -1623,9 +1675,9 @@ mod tests {
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: Some(WebSearchMode::Live),
+            web_search_mode: WebSearchMode::Live,
         });
-        let (tools, _) = build_specs(&config, None).build();
+        let (tools, _) = build_specs(&config, None, &[]).build();
 
         // Build actual map name -> spec
         use std::collections::BTreeMap;
@@ -1688,9 +1740,9 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: Some(WebSearchMode::Cached),
+            web_search_mode: WebSearchMode::Cached,
         });
-        let (tools, _) = build_specs(&tools_config, None).build();
+        let (tools, _) = build_specs(&tools_config, None, &[]).build();
         assert_contains_tool_names(
             &tools,
             &["spawn_agent", "send_input", "wait", "close_agent"],
@@ -1706,9 +1758,9 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: Some(WebSearchMode::Cached),
+            web_search_mode: WebSearchMode::Cached,
         });
-        let (tools, _) = build_specs(&tools_config, None).build();
+        let (tools, _) = build_specs(&tools_config, None, &[]).build();
         assert!(
             !tools.iter().any(|t| t.spec.name() == "request_user_input"),
             "request_user_input should be disabled when collaboration_modes feature is off"
@@ -1718,16 +1770,16 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: Some(WebSearchMode::Cached),
+            web_search_mode: WebSearchMode::Cached,
         });
-        let (tools, _) = build_specs(&tools_config, None).build();
+        let (tools, _) = build_specs(&tools_config, None, &[]).build();
         assert_contains_tool_names(&tools, &["request_user_input"]);
     }
 
     fn assert_model_tools(
         model_slug: &str,
         features: &Features,
-        web_search_mode: Option<WebSearchMode>,
+        web_search_mode: WebSearchMode,
         expected_tools: &[&str],
     ) {
         let config = test_config();
@@ -1737,7 +1789,7 @@ mod tests {
             features,
             web_search_mode,
         });
-        let (tools, _) = build_specs(&tools_config, Some(HashMap::new())).build();
+        let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), &[]).build();
         let tool_names = tools.iter().map(|t| t.spec.name()).collect::<Vec<_>>();
         assert_eq!(&tool_names, &expected_tools,);
     }
@@ -1751,9 +1803,9 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: Some(WebSearchMode::Cached),
+            web_search_mode: WebSearchMode::Cached,
         });
-        let (tools, _) = build_specs(&tools_config, None).build();
+        let (tools, _) = build_specs(&tools_config, None, &[]).build();
 
         let tool = find_tool(&tools, "web_search");
         assert_eq!(
@@ -1773,9 +1825,9 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: Some(WebSearchMode::Live),
+            web_search_mode: WebSearchMode::Live,
         });
-        let (tools, _) = build_specs(&tools_config, None).build();
+        let (tools, _) = build_specs(&tools_config, None, &[]).build();
 
         let tool = find_tool(&tools, "web_search");
         assert_eq!(
@@ -1793,7 +1845,7 @@ mod tests {
         assert_model_tools(
             "gpt-5-codex",
             &features,
-            Some(WebSearchMode::Cached),
+            WebSearchMode::Cached,
             &[
                 "shell_command",
                 "list_mcp_resources",
@@ -1816,7 +1868,7 @@ mod tests {
         assert_model_tools(
             "gpt-5.1-codex",
             &features,
-            Some(WebSearchMode::Cached),
+            WebSearchMode::Cached,
             &[
                 "shell_command",
                 "list_mcp_resources",
@@ -1840,7 +1892,7 @@ mod tests {
         assert_model_tools(
             "gpt-5-codex",
             &features,
-            Some(WebSearchMode::Live),
+            WebSearchMode::Live,
             &[
                 "exec_command",
                 "write_stdin",
@@ -1865,7 +1917,7 @@ mod tests {
         assert_model_tools(
             "gpt-5.1-codex",
             &features,
-            Some(WebSearchMode::Live),
+            WebSearchMode::Live,
             &[
                 "exec_command",
                 "write_stdin",
@@ -1889,7 +1941,7 @@ mod tests {
         assert_model_tools(
             "codex-mini-latest",
             &features,
-            Some(WebSearchMode::Cached),
+            WebSearchMode::Cached,
             &[
                 "local_shell",
                 "list_mcp_resources",
@@ -1911,7 +1963,7 @@ mod tests {
         assert_model_tools(
             "gpt-5.1-codex-mini",
             &features,
-            Some(WebSearchMode::Cached),
+            WebSearchMode::Cached,
             &[
                 "shell_command",
                 "list_mcp_resources",
@@ -1934,7 +1986,7 @@ mod tests {
         assert_model_tools(
             "gpt-5",
             &features,
-            Some(WebSearchMode::Cached),
+            WebSearchMode::Cached,
             &[
                 "shell",
                 "list_mcp_resources",
@@ -1956,7 +2008,7 @@ mod tests {
         assert_model_tools(
             "gpt-5.1",
             &features,
-            Some(WebSearchMode::Cached),
+            WebSearchMode::Cached,
             &[
                 "shell_command",
                 "list_mcp_resources",
@@ -1979,7 +2031,7 @@ mod tests {
         assert_model_tools(
             "exp-5.1",
             &features,
-            Some(WebSearchMode::Cached),
+            WebSearchMode::Cached,
             &[
                 "exec_command",
                 "write_stdin",
@@ -2004,7 +2056,7 @@ mod tests {
         assert_model_tools(
             "codex-mini-latest",
             &features,
-            Some(WebSearchMode::Live),
+            WebSearchMode::Live,
             &[
                 "exec_command",
                 "write_stdin",
@@ -2029,9 +2081,9 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: Some(WebSearchMode::Live),
+            web_search_mode: WebSearchMode::Live,
         });
-        let (tools, _) = build_specs(&tools_config, Some(HashMap::new())).build();
+        let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), &[]).build();
 
         // Only check the shell variant and a couple of core tools.
         let mut subset = vec!["exec_command", "write_stdin", "update_plan"];
@@ -2051,9 +2103,9 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: Some(WebSearchMode::Cached),
+            web_search_mode: WebSearchMode::Cached,
         });
-        let (tools, _) = build_specs(&tools_config, None).build();
+        let (tools, _) = build_specs(&tools_config, None, &[]).build();
 
         assert!(!find_tool(&tools, "exec_command").supports_parallel_tool_calls);
         assert!(!find_tool(&tools, "write_stdin").supports_parallel_tool_calls);
@@ -2070,9 +2122,9 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: Some(WebSearchMode::Cached),
+            web_search_mode: WebSearchMode::Cached,
         });
-        let (tools, _) = build_specs(&tools_config, None).build();
+        let (tools, _) = build_specs(&tools_config, None, &[]).build();
 
         assert!(
             tools
@@ -2101,7 +2153,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: Some(WebSearchMode::Live),
+            web_search_mode: WebSearchMode::Live,
         });
         let (tools, _) = build_specs(
             &tools_config,
@@ -2139,6 +2191,7 @@ mod tests {
                     description: Some("Do something cool".to_string()),
                 },
             )])),
+            &[],
         )
         .build();
 
@@ -2196,7 +2249,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: Some(WebSearchMode::Cached),
+            web_search_mode: WebSearchMode::Cached,
         });
 
         // Intentionally construct a map with keys that would sort alphabetically.
@@ -2248,7 +2301,7 @@ mod tests {
             ),
         ]);
 
-        let (tools, _) = build_specs(&tools_config, Some(tools_map)).build();
+        let (tools, _) = build_specs(&tools_config, Some(tools_map), &[]).build();
 
         // Only assert that the MCP tools themselves are sorted by fully-qualified name.
         let mcp_names: Vec<_> = tools
@@ -2273,7 +2326,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: Some(WebSearchMode::Cached),
+            web_search_mode: WebSearchMode::Cached,
         });
 
         let (tools, _) = build_specs(
@@ -2297,6 +2350,7 @@ mod tests {
                     description: Some("Search docs".to_string()),
                 },
             )])),
+            &[],
         )
         .build();
 
@@ -2330,7 +2384,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: Some(WebSearchMode::Cached),
+            web_search_mode: WebSearchMode::Cached,
         });
 
         let (tools, _) = build_specs(
@@ -2352,6 +2406,7 @@ mod tests {
                     description: Some("Pagination".to_string()),
                 },
             )])),
+            &[],
         )
         .build();
 
@@ -2384,7 +2439,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: Some(WebSearchMode::Cached),
+            web_search_mode: WebSearchMode::Cached,
         });
 
         let (tools, _) = build_specs(
@@ -2406,6 +2461,7 @@ mod tests {
                     description: Some("Tags".to_string()),
                 },
             )])),
+            &[],
         )
         .build();
 
@@ -2440,7 +2496,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: Some(WebSearchMode::Cached),
+            web_search_mode: WebSearchMode::Cached,
         });
 
         let (tools, _) = build_specs(
@@ -2462,6 +2518,7 @@ mod tests {
                     description: Some("AnyOf Value".to_string()),
                 },
             )])),
+            &[],
         )
         .build();
 
@@ -2552,7 +2609,7 @@ Examples of valid command strings:
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: Some(WebSearchMode::Cached),
+            web_search_mode: WebSearchMode::Cached,
         });
         let (tools, _) = build_specs(
             &tools_config,
@@ -2599,6 +2656,7 @@ Examples of valid command strings:
                     description: Some("Do something cool".to_string()),
                 },
             )])),
+            &[],
         )
         .build();
 

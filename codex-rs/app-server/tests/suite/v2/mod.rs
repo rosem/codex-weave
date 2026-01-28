@@ -1,7 +1,9 @@
 mod account;
 mod analytics;
+mod app_list;
 mod collaboration_mode_list;
 mod config_rpc;
+mod dynamic_tools;
 mod initialize;
 mod model_list;
 mod output_schema;
@@ -16,5 +18,6 @@ mod thread_read;
 mod thread_resume;
 mod thread_rollback;
 mod thread_start;
+mod thread_unarchive;
 mod turn_interrupt;
 mod turn_start;

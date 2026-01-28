@@ -8,6 +8,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 
+use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_protocol::weave::WeaveRelayToolResult;
@@ -72,6 +73,7 @@ pub(crate) struct TurnState {
     pending_approvals: HashMap<String, oneshot::Sender<ReviewDecision>>,
     pending_user_input: HashMap<String, oneshot::Sender<RequestUserInputResponse>>,
     pending_weave_relay: HashMap<String, oneshot::Sender<WeaveRelayToolResult>>,
+    pending_dynamic_tools: HashMap<String, oneshot::Sender<DynamicToolResponse>>,
     pending_input: Vec<ResponseInputItem>,
 }
 
@@ -95,6 +97,7 @@ impl TurnState {
         self.pending_approvals.clear();
         self.pending_user_input.clear();
         self.pending_weave_relay.clear();
+        self.pending_dynamic_tools.clear();
         self.pending_input.clear();
     }
 
@@ -126,6 +129,21 @@ impl TurnState {
         key: &str,
     ) -> Option<oneshot::Sender<WeaveRelayToolResult>> {
         self.pending_weave_relay.remove(key)
+    }
+
+    pub(crate) fn insert_pending_dynamic_tool(
+        &mut self,
+        key: String,
+        tx: oneshot::Sender<DynamicToolResponse>,
+    ) -> Option<oneshot::Sender<DynamicToolResponse>> {
+        self.pending_dynamic_tools.insert(key, tx)
+    }
+
+    pub(crate) fn remove_pending_dynamic_tool(
+        &mut self,
+        key: &str,
+    ) -> Option<oneshot::Sender<DynamicToolResponse>> {
+        self.pending_dynamic_tools.remove(key)
     }
 
     pub(crate) fn push_pending_input(&mut self, input: ResponseInputItem) {

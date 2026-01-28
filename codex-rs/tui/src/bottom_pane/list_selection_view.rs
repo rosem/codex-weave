@@ -10,18 +10,15 @@ use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::Block;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 
+use super::selection_popup_common::render_menu_surface;
 use super::selection_popup_common::wrap_styled_line;
 use crate::app_event_sender::AppEventSender;
 use crate::key_hint::KeyBinding;
-use crate::render::Insets;
-use crate::render::RectExt as _;
 use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::Renderable;
-use crate::style::user_message_style;
 
 use super::CancellationEvent;
 use super::bottom_pane_view::BottomPaneView;
@@ -43,6 +40,7 @@ pub(crate) struct SelectionItem {
     pub selected_description: Option<String>,
     pub is_current: bool,
     pub is_default: bool,
+    pub is_disabled: bool,
     pub actions: Vec<SelectionAction>,
     pub dismiss_on_select: bool,
     pub search_value: Option<String>,
@@ -222,6 +220,7 @@ impl ListSelectionView {
                             display_shortcut: None,
                             match_indices: None,
                             description: None,
+                            is_disabled: false,
                             wrap_indent: Some(wrap_prefix_width),
                             disabled_reason: None,
                         };
@@ -233,6 +232,7 @@ impl ListSelectionView {
                             display_shortcut: None,
                             match_indices: None,
                             description: None,
+                            is_disabled: false,
                             wrap_indent: Some(0),
                             disabled_reason: None,
                         };
@@ -263,6 +263,7 @@ impl ListSelectionView {
                         .flatten()
                         .or_else(|| item.description.clone());
                     let wrap_indent = description.is_none().then_some(wrap_prefix_width);
+                    let is_disabled = item.is_disabled || item.disabled_reason.is_some();
                     GenericDisplayRow {
                         name: display_name,
                         name_style: None,
@@ -270,6 +271,7 @@ impl ListSelectionView {
                         match_indices: None,
                         description,
                         wrap_indent,
+                        is_disabled,
                         disabled_reason: item.disabled_reason.clone(),
                     }
                 })
@@ -296,21 +298,29 @@ impl ListSelectionView {
     }
 
     fn accept(&mut self) {
-        if let Some(idx) = self.state.selected_idx
-            && let Some(actual_idx) = self.filtered_indices.get(idx)
-            && let Some(item) = self.items.get(*actual_idx)
+        let selected_item = self
+            .state
+            .selected_idx
+            .and_then(|idx| self.filtered_indices.get(idx))
+            .and_then(|actual_idx| self.items.get(*actual_idx));
+        if let Some(item) = selected_item
             && item.disabled_reason.is_none()
+            && !item.is_disabled
             && !item.name.is_empty()
             && !item.is_search_row
         {
-            self.last_selected_actual_idx = Some(*actual_idx);
+            if let Some(idx) = self.state.selected_idx
+                && let Some(actual_idx) = self.filtered_indices.get(idx)
+            {
+                self.last_selected_actual_idx = Some(*actual_idx);
+            }
             for act in &item.actions {
                 act(&self.app_event_tx);
             }
             if item.dismiss_on_select {
                 self.complete = true;
             }
-        } else {
+        } else if selected_item.is_none() {
             self.complete = true;
         }
     }
@@ -335,7 +345,10 @@ impl ListSelectionView {
             if let Some(idx) = self.state.selected_idx
                 && let Some(actual_idx) = self.filtered_indices.get(idx)
                 && self.items.get(*actual_idx).is_some_and(|item| {
-                    item.disabled_reason.is_some() || item.name.is_empty() || item.is_search_row
+                    item.disabled_reason.is_some()
+                        || item.is_disabled
+                        || item.name.is_empty()
+                        || item.is_search_row
                 })
             {
                 self.state.move_down_wrap(len);
@@ -351,7 +364,10 @@ impl ListSelectionView {
             if let Some(idx) = self.state.selected_idx
                 && let Some(actual_idx) = self.filtered_indices.get(idx)
                 && self.items.get(*actual_idx).is_some_and(|item| {
-                    item.disabled_reason.is_some() || item.name.is_empty() || item.is_search_row
+                    item.disabled_reason.is_some()
+                        || item.is_disabled
+                        || item.name.is_empty()
+                        || item.is_search_row
                 })
             {
                 self.state.move_up_wrap(len);
@@ -370,7 +386,10 @@ impl ListSelectionView {
             .selected_idx
             .and_then(|visible_idx| self.filtered_indices.get(visible_idx).copied())
             && self.items.get(actual_idx).is_some_and(|item| {
-                item.disabled_reason.is_none() && !item.name.is_empty() && !item.is_search_row
+                item.disabled_reason.is_none()
+                    && !item.is_disabled
+                    && !item.name.is_empty()
+                    && !item.is_search_row
             })
         {
             self.last_unfiltered_selected_actual_idx = Some(actual_idx);
@@ -462,6 +481,7 @@ impl BottomPaneView for ListSelectionView {
                         .get(idx)
                         .is_some_and(|item| {
                             item.disabled_reason.is_none()
+                                && !item.is_disabled
                                 && !item.name.is_empty()
                                 && !item.is_search_row
                         })
@@ -537,16 +557,16 @@ impl Renderable for ListSelectionView {
         let [content_area, footer_area] =
             Layout::vertical([Constraint::Fill(1), Constraint::Length(footer_rows)]).areas(area);
 
-        Block::default()
-            .style(user_message_style())
-            .render(content_area, buf);
+        let outer_content_area = content_area;
+        // Paint the shared menu surface and then layout inside the returned inset.
+        let content_area = render_menu_surface(outer_content_area, buf);
 
         let header_height = self
             .header
             // Subtract 4 for the padding on the left and right of the header.
-            .desired_height(content_area.width.saturating_sub(4));
+            .desired_height(outer_content_area.width.saturating_sub(4));
         let rows = self.build_rows();
-        let rows_width = Self::rows_width(content_area.width);
+        let rows_width = Self::rows_width(outer_content_area.width);
         let search_height = if self.is_searchable && self.show_search_bar {
             1
         } else {
@@ -564,7 +584,7 @@ impl Renderable for ListSelectionView {
             Constraint::Length(search_height),
             Constraint::Length(rows_height),
         ])
-        .areas(content_area.inset(Insets::vh(1, 2)));
+        .areas(content_area);
 
         if header_area.height < header_height {
             let [header_area, elision_area] =

@@ -110,6 +110,7 @@ impl WeaveAgentPopup {
                     match_indices: indices,
                     display_shortcut: None,
                     description,
+                    is_disabled: false,
                     disabled_reason: None,
                     wrap_indent: None,
                 }
@@ -195,6 +196,7 @@ impl WeaveAgentPopup {
                 match_indices: None,
                 display_shortcut: None,
                 description: None,
+                is_disabled: false,
                 disabled_reason: None,
                 wrap_indent: None,
             });
@@ -206,6 +208,7 @@ impl WeaveAgentPopup {
                 match_indices: None,
                 display_shortcut: None,
                 description: None,
+                is_disabled: false,
                 disabled_reason: None,
                 wrap_indent: None,
             });

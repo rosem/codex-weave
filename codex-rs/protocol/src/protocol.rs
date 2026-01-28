@@ -17,11 +17,14 @@ use crate::config_types::CollaborationMode;
 use crate::config_types::Personality;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use crate::custom_prompts::CustomPrompt;
+use crate::dynamic_tools::DynamicToolCallRequest;
+use crate::dynamic_tools::DynamicToolResponse;
 use crate::items::TurnItem;
 use crate::message_history::HistoryEntry;
 use crate::models::BaseInstructions;
 use crate::models::ContentItem;
 use crate::models::ResponseItem;
+use crate::models::WebSearchAction;
 use crate::num_format::format_with_separators;
 use crate::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use crate::parse_command::ParsedCommand;
@@ -225,6 +228,14 @@ pub enum Op {
         id: String,
         /// Result of the relay request.
         result: WeaveRelayToolResult,
+    },
+
+    /// Resolve a dynamic tool call request.
+    DynamicToolResponse {
+        /// Call id for the in-flight request.
+        id: String,
+        /// Tool output payload.
+        response: DynamicToolResponse,
     },
 
     /// Append an entry to the persistent cross-session message history.
@@ -762,6 +773,7 @@ pub enum EventMsg {
     RequestUserInput(RequestUserInputEvent),
 
     WeaveRelayRequest(WeaveRelayRequestEvent),
+    DynamicToolCallRequest(DynamicToolCallRequest),
 
     ElicitationRequest(ElicitationRequestEvent),
 
@@ -1042,6 +1054,7 @@ impl HasLegacyEvent for ReasoningRawContentDeltaEvent {
 impl HasLegacyEvent for EventMsg {
     fn as_legacy_events(&self, show_raw_agent_reasoning: bool) -> Vec<EventMsg> {
         match self {
+            EventMsg::ItemStarted(event) => event.as_legacy_events(show_raw_agent_reasoning),
             EventMsg::ItemCompleted(event) => event.as_legacy_events(show_raw_agent_reasoning),
             EventMsg::AgentMessageContentDelta(event) => {
                 event.as_legacy_events(show_raw_agent_reasoning)
@@ -1403,6 +1416,7 @@ pub struct WebSearchBeginEvent {
 pub struct WebSearchEndEvent {
     pub call_id: String,
     pub query: String,
+    pub action: WebSearchAction,
 }
 
 // Conversation kept for backward compatibility.
@@ -1531,6 +1545,10 @@ pub enum SessionSource {
 pub enum SubAgentSource {
     Review,
     Compact,
+    ThreadSpawn {
+        parent_thread_id: ThreadId,
+        depth: i32,
+    },
     Other(String),
 }
 
@@ -1552,6 +1570,12 @@ impl fmt::Display for SubAgentSource {
         match self {
             SubAgentSource::Review => f.write_str("review"),
             SubAgentSource::Compact => f.write_str("compact"),
+            SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth,
+            } => {
+                write!(f, "thread_spawn_{parent_thread_id}_d{depth}")
+            }
             SubAgentSource::Other(other) => f.write_str(other),
         }
     }
@@ -2152,7 +2176,9 @@ pub struct SessionConfiguredEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub initial_messages: Option<Vec<EventMsg>>,
 
-    pub rollout_path: PathBuf,
+    /// Path in which the rollout is stored. Can be `None` for ephemeral threads
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rollout_path: Option<PathBuf>,
 }
 
 /// User's decision in response to an ExecApprovalRequest.
@@ -2364,6 +2390,9 @@ mod tests {
             item: TurnItem::WebSearch(WebSearchItem {
                 id: "search-1".into(),
                 query: "find docs".into(),
+                action: WebSearchAction::Search {
+                    query: Some("find docs".into()),
+                },
             }),
         };
 
@@ -2504,7 +2533,7 @@ mod tests {
                 history_log_id: 0,
                 history_entry_count: 0,
                 initial_messages: None,
-                rollout_path: rollout_file.path().to_path_buf(),
+                rollout_path: Some(rollout_file.path().to_path_buf()),
             }),
         };
 

@@ -180,7 +180,7 @@ fn weave_relay_needs_follow_up(payload: &ToolPayload) -> bool {
         match action {
             WeaveRelayAction::Wait { .. } => return false,
             WeaveRelayAction::Message { expects_reply, .. } => {
-                if expects_reply.unwrap_or(false) {
+                if expects_reply.unwrap_or(true) {
                     return false;
                 }
             }

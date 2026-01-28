@@ -147,7 +147,7 @@ struct ResumeCommand {
     session_id: Option<String>,
 
     /// Continue the most recent session without showing the picker.
-    #[arg(long = "last", default_value_t = false, conflicts_with = "session_id")]
+    #[arg(long = "last", default_value_t = false)]
     last: bool,
 
     /// Show all sessions (disables cwd filtering and shows CWD column).
@@ -396,8 +396,7 @@ fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
     if !status.success() {
         anyhow::bail!("`{cmd_str}` failed with status {status}");
     }
-    println!();
-    println!("🎉 Update ran successfully! Please restart Codex.");
+    println!("\n🎉 Update ran successfully! Please restart Codex.");
     Ok(())
 }
 
@@ -454,8 +453,8 @@ enum FeaturesSubcommand {
 fn stage_str(stage: codex_core::features::Stage) -> &'static str {
     use codex_core::features::Stage;
     match stage {
-        Stage::Beta => "experimental",
-        Stage::Experimental { .. } => "beta",
+        Stage::UnderDevelopment => "under development",
+        Stage::Experimental { .. } => "experimental",
         Stage::Stable => "stable",
         Stage::Deprecated => "deprecated",
         Stage::Removed => "removed",
@@ -696,11 +695,20 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                     overrides,
                 )
                 .await?;
+                let mut rows = Vec::with_capacity(codex_core::features::FEATURES.len());
+                let mut name_width = 0;
+                let mut stage_width = 0;
                 for def in codex_core::features::FEATURES.iter() {
                     let name = def.key;
                     let stage = stage_str(def.stage);
                     let enabled = config.features.enabled(def.id);
-                    println!("{name}\t{stage}\t{enabled}");
+                    name_width = name_width.max(name.len());
+                    stage_width = stage_width.max(stage.len());
+                    rows.push((name, stage, enabled));
+                }
+
+                for (name, stage, enabled) in rows {
+                    println!("{name:<name_width$}  {stage:<stage_width$}  {enabled}");
                 }
             }
         },
@@ -922,6 +930,24 @@ mod tests {
         };
 
         finalize_fork_interactive(interactive, root_overrides, session_id, last, all, fork_cli)
+    }
+
+    #[test]
+    fn exec_resume_last_accepts_prompt_positional() {
+        let cli =
+            MultitoolCli::try_parse_from(["codex", "exec", "--json", "resume", "--last", "2+2"])
+                .expect("parse should succeed");
+
+        let Some(Subcommand::Exec(exec)) = cli.subcommand else {
+            panic!("expected exec subcommand");
+        };
+        let Some(codex_exec::Command::Resume(args)) = exec.command else {
+            panic!("expected exec resume");
+        };
+
+        assert!(args.last);
+        assert_eq!(args.session_id, None);
+        assert_eq!(args.prompt.as_deref(), Some("2+2"));
     }
 
     fn app_server_from_args(args: &[&str]) -> AppServerCommand {

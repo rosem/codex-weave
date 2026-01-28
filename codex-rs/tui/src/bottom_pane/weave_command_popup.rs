@@ -138,6 +138,7 @@ impl WeaveCommandPopup {
                     match_indices,
                     display_shortcut: None,
                     description: Some(cmd.description().to_string()),
+                    is_disabled: false,
                     disabled_reason: None,
                     wrap_indent: None,
                 }
