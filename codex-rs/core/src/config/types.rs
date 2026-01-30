@@ -462,6 +462,10 @@ pub struct Tui {
     /// scrollback in terminal multiplexers like Zellij that follow the xterm spec.
     #[serde(default)]
     pub alternate_screen: AltScreenMode,
+
+    /// Root directory for Weave workflow files on the local filesystem.
+    #[serde(default)]
+    pub weave_workflow_dir: Option<AbsolutePathBuf>,
 }
 
 const fn default_true() -> bool {

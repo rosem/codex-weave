@@ -1523,6 +1523,70 @@ impl App {
             AppEvent::SetWeaveSessionSelection { session } => {
                 self.chat_widget.set_weave_session_selection(session);
             }
+            AppEvent::OpenWeaveWorkflowDirPrompt => {
+                self.chat_widget.open_weave_workflow_dir_prompt();
+            }
+            AppEvent::SetWeaveWorkflowDir { path } => {
+                let path = match path {
+                    None => None,
+                    Some(path) => {
+                        let resolved = match AbsolutePathBuf::resolve_path_against_base(
+                            &path,
+                            &self.config.cwd,
+                        ) {
+                            Ok(resolved) => resolved.to_path_buf(),
+                            Err(err) => {
+                                self.chat_widget.add_error_message(format!(
+                                    "Failed to resolve workflow directory {}: {err}",
+                                    path.display()
+                                ));
+                                return Ok(AppRunControl::Continue);
+                            }
+                        };
+                        if resolved.is_dir() {
+                            Some(resolved)
+                        } else {
+                            self.chat_widget.add_error_message(format!(
+                                "Workflow directory does not exist: {}",
+                                resolved.display()
+                            ));
+                            return Ok(AppRunControl::Continue);
+                        }
+                    }
+                };
+                match ConfigEditsBuilder::new(&self.config.codex_home)
+                    .set_weave_workflow_dir(path.as_deref())
+                    .apply()
+                    .await
+                {
+                    Ok(()) => {
+                        self.config.weave_workflow_dir = path.clone();
+                        self.chat_widget.set_weave_workflow_dir(path.clone());
+                        if let Some(path) = path {
+                            self.chat_widget.add_info_message(
+                                format!("Weave workflow directory set: {}", path.display()),
+                                None,
+                            );
+                        } else {
+                            self.chat_widget.add_info_message(
+                                "Weave workflow directory cleared.".to_string(),
+                                None,
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        tracing::error!(error = %err, "failed to persist weave workflow dir");
+                        self.chat_widget
+                            .add_error_message(format!("Failed to save workflow directory: {err}"));
+                    }
+                }
+            }
+            AppEvent::OpenWeaveWorkflowPicker { root, dir } => {
+                self.chat_widget.open_weave_workflow_picker(root, dir);
+            }
+            AppEvent::RunWeaveWorkflow { path } => {
+                self.chat_widget.run_weave_workflow(path);
+            }
             AppEvent::WeaveSessionClosed { session_id } => {
                 self.chat_widget.on_weave_session_closed(&session_id);
             }

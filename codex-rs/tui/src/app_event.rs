@@ -126,6 +126,25 @@ pub(crate) enum AppEvent {
         session: Option<WeaveSession>,
     },
 
+    /// Prompt for a Weave workflow directory.
+    OpenWeaveWorkflowDirPrompt,
+
+    /// Persist and apply the Weave workflow directory.
+    SetWeaveWorkflowDir {
+        path: Option<PathBuf>,
+    },
+
+    /// Open the Weave workflow picker at the given directory.
+    OpenWeaveWorkflowPicker {
+        root: PathBuf,
+        dir: PathBuf,
+    },
+
+    /// Load and run a Weave workflow file.
+    RunWeaveWorkflow {
+        path: PathBuf,
+    },
+
     /// Notify the UI that a Weave session closed successfully.
     WeaveSessionClosed {
         session_id: String,

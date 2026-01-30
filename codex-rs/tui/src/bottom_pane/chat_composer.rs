@@ -1874,12 +1874,9 @@ impl ChatComposer {
     ) -> bool {
         let mention_lookup = weave_client::weave_mention_lookup(agents);
         for token in text.split_whitespace() {
-            let Some(mention) = token.strip_prefix('#') else {
+            let Some(mention) = Self::normalize_weave_mention_token(token) else {
                 continue;
             };
-            if mention.is_empty() {
-                continue;
-            }
             let Some(agent) = mention_lookup.get(mention) else {
                 continue;
             };
@@ -1889,6 +1886,12 @@ impl ChatComposer {
             return true;
         }
         false
+    }
+
+    fn normalize_weave_mention_token(token: &str) -> Option<&str> {
+        let trimmed = token.trim_matches(|c: char| c.is_ascii_punctuation() && c != '#');
+        let mention = trimmed.strip_prefix('#')?;
+        (!mention.trim().is_empty()).then_some(mention)
     }
 
     /// Replace the active `@token` (the one under the cursor) with `path`.

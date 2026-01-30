@@ -996,6 +996,15 @@
           "default": true,
           "description": "Show startup tooltips in the TUI welcome screen. Defaults to `true`.",
           "type": "boolean"
+        },
+        "weave_workflow_dir": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AbsolutePathBuf"
+            }
+          ],
+          "default": null,
+          "description": "Root directory for Weave workflow files on the local filesystem."
         }
       },
       "type": "object"

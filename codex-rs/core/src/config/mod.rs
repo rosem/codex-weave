@@ -211,6 +211,9 @@ pub struct Config {
     /// - `never`: Never use alternate screen (inline mode, preserves scrollback).
     pub tui_alternate_screen: AltScreenMode,
 
+    /// Root directory for Weave workflow files on the local filesystem.
+    pub weave_workflow_dir: Option<PathBuf>,
+
     /// The directory that should be treated as the current working directory
     /// for the session. All relative paths inside the business-logic layer are
     /// resolved against this path.
@@ -1602,6 +1605,10 @@ impl Config {
                 .as_ref()
                 .map(|t| t.alternate_screen)
                 .unwrap_or_default(),
+            weave_workflow_dir: cfg
+                .tui
+                .as_ref()
+                .and_then(|t| t.weave_workflow_dir.as_ref().map(|dir| dir.to_path_buf())),
             otel: {
                 let t: OtelConfigToml = cfg.otel.unwrap_or_default();
                 let log_user_prompt = t.log_user_prompt.unwrap_or(false);
@@ -3758,6 +3765,7 @@ model_verbosity = "high"
                 analytics_enabled: Some(true),
                 feedback_enabled: true,
                 tui_alternate_screen: AltScreenMode::Auto,
+                weave_workflow_dir: None,
                 otel: OtelConfig::default(),
             },
             o3_profile_config
@@ -3841,6 +3849,7 @@ model_verbosity = "high"
             analytics_enabled: Some(true),
             feedback_enabled: true,
             tui_alternate_screen: AltScreenMode::Auto,
+            weave_workflow_dir: None,
             otel: OtelConfig::default(),
         };
 
@@ -3939,6 +3948,7 @@ model_verbosity = "high"
             analytics_enabled: Some(false),
             feedback_enabled: true,
             tui_alternate_screen: AltScreenMode::Auto,
+            weave_workflow_dir: None,
             otel: OtelConfig::default(),
         };
 
@@ -4023,6 +4033,7 @@ model_verbosity = "high"
             analytics_enabled: Some(true),
             feedback_enabled: true,
             tui_alternate_screen: AltScreenMode::Auto,
+            weave_workflow_dir: None,
             otel: OtelConfig::default(),
         };
 

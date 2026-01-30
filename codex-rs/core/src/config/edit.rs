@@ -798,6 +798,23 @@ impl ConfigEditsBuilder {
         self
     }
 
+    pub fn set_weave_workflow_dir(mut self, path: Option<&Path>) -> Self {
+        match path {
+            Some(path) => {
+                self.edits.push(ConfigEdit::SetPath {
+                    segments: vec!["tui".to_string(), "weave_workflow_dir".to_string()],
+                    value: value(path.to_string_lossy().to_string()),
+                });
+            }
+            None => {
+                self.edits.push(ConfigEdit::ClearPath {
+                    segments: vec!["tui".to_string(), "weave_workflow_dir".to_string()],
+                });
+            }
+        }
+        self
+    }
+
     pub fn with_edits<I>(mut self, edits: I) -> Self
     where
         I: IntoIterator<Item = ConfigEdit>,
