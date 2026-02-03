@@ -37,6 +37,15 @@ Stop the Weave coordinator when finished:
 weave-service stop
 ```
 
+### Config (recommended)
+
+To avoid confusion with collaborative features creating new agents, disable collab mode in `~/.codex/config.toml`:
+
+```toml
+[features]
+collab = false
+```
+
 ## Weave commands
 
 ### `/weave`

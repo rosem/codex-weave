@@ -3399,7 +3399,7 @@ impl ChatComposer {
                 popup.render_ref(popup_rect, buf);
             }
             ActivePopup::None => {
-                let footer_props = self.footer_props();
+                let mut footer_props = self.footer_props();
                 let show_cycle_hint =
                     !footer_props.is_task_running && self.collaboration_mode_indicator.is_some();
                 let show_shortcuts_hint = match footer_props.mode {

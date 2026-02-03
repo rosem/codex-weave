@@ -43,6 +43,15 @@ Restart the coordinator to pick up a new binary:
 weave-service restart
 ```
 
+### Config (recommended)
+
+To avoid confusion with collaborative features creating new agents, disable collab mode in `~/.codex/config.toml`:
+
+```toml
+[features]
+collab = false
+```
+
 ## Weave commands
 
 ### `/weave`

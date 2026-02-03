@@ -183,17 +183,19 @@ fn weave_relay_needs_follow_up(payload: &ToolPayload) -> bool {
         return false;
     }
     let mut has_actions = false;
+    let mut has_wait = false;
     for action in &args.actions {
         has_actions = true;
         match action {
-            WeaveRelayAction::Wait { .. } => return false,
-            WeaveRelayAction::Message { expects_reply, .. } => {
-                if expects_reply.unwrap_or(true) {
-                    return false;
-                }
+            WeaveRelayAction::Wait { .. } => {
+                has_wait = true;
             }
             WeaveRelayAction::Control { .. } => {}
+            WeaveRelayAction::Message { .. } => {}
         }
+    }
+    if has_wait {
+        return false;
     }
     if !has_actions {
         return true;

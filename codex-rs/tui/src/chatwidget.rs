@@ -784,10 +784,6 @@ impl WeaveRelayTargetState {
 
     fn has_pending_reply(&self) -> bool {
         self.waiting
-            || self
-                .pending_actions
-                .values()
-                .any(|pending| pending.expects_reply)
     }
 }
 
@@ -2888,6 +2884,12 @@ impl ChatWidget {
             return self.weave_relay_validation_error(message, true);
         }
 
+        if done_requested && self.weave_waiting {
+            return self.weave_relay_validation_error(
+                "Weave relay done cannot be sent while waiting for targets.".to_string(),
+                true,
+            );
+        }
         if done_requested {
             self.send_weave_relay_done(&active, done_summary);
             self.clear_pending_weave_relay_state();
@@ -4649,7 +4651,7 @@ impl ChatWidget {
                 WeaveRelayAction::Message {
                     dst,
                     plan_step_id,
-                    expects_reply,
+                    expects_reply: _,
                     ..
                 } => {
                     let dst = dst.trim();
@@ -4659,11 +4661,6 @@ impl ChatWidget {
                     let plan_step_id = plan_step_id.trim();
                     if plan_step_id.is_empty() {
                         return Err("Weave relay action requires plan_step_id.".to_string());
-                    }
-                    if expects_reply.is_none() {
-                        return Err(
-                            "Weave relay message requires expects_reply (true|false).".to_string()
-                        );
                     }
                     let resolved =
                         resolve_weave_relay_targets(agents, std::slice::from_ref(&dst.to_string()));
@@ -4914,7 +4911,6 @@ impl ChatWidget {
                         let reply_to_action_id = if !expects_reply {
                             self.weave_target_states
                                 .get(&agent.id)
-                                .filter(|state| state.has_pending_reply())
                                 .and_then(|state| state.last_action_id.as_deref())
                                 .map(ToString::to_string)
                         } else {
@@ -7809,6 +7805,7 @@ impl ChatWidget {
         self.weave_agent_is_lead = is_lead;
         self.weave_agent_role_preference = Some(is_lead);
         self.bottom_pane.set_weave_lead(is_lead);
+        self.refresh_weave_session_label();
         if let Some(agents) = self.weave_agents.as_mut() {
             if let Some(agent) = agents
                 .iter_mut()
@@ -7924,6 +7921,7 @@ impl ChatWidget {
                 self.push_weave_role_context_update();
             }
             self.bottom_pane.set_weave_lead(self.weave_agent_is_lead);
+            self.refresh_weave_session_label();
             self.weave_agent_role_preference = None;
         }
         self.weave_agents = Some(agents.clone());
@@ -11016,7 +11014,7 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], relay_id: &str, wants_plan: 
         );
         lines.push("- If a step waits on a reply, say so in the step text.".to_string());
         lines.push(
-            "- If a step sends expects_reply: true, include (wait for reply) in the step text."
+            "- If a step uses a wait action, include (wait for reply) in the step text."
                 .to_string(),
         );
         lines.push(
@@ -11034,6 +11032,7 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], relay_id: &str, wants_plan: 
             .to_string(),
     );
     lines.push("Your response must begin with a weave_relay_actions tool call.".to_string());
+    lines.push("Make exactly one weave_relay_actions call per response.".to_string());
     lines.push("Any non-tool output is ignored and treated as a failed turn.".to_string());
     lines.push(
         "If you need to give the user a final summary, reply via done.summary (no plain-text while a relay is active)."
@@ -11044,12 +11043,16 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], relay_id: &str, wants_plan: 
             .to_string(),
     );
     lines.push(
-        "Send message actions first (use expects_reply: false if no reply is needed), then send a separate done call with actions: []."
+        "Send message actions first (use expects_reply: false if no reply is needed).".to_string(),
+    );
+    lines.push(
+        "In a later response, send a done call with actions: [] (optionally include done.summary)."
             .to_string(),
     );
     lines.push("Do not send done while waiting for target replies.".to_string());
     lines.push("Never guess or fabricate a relay_id.".to_string());
     lines.push("If you need to wait, send a wait action with targets.".to_string());
+    lines.push("Wait controls blocking; expects_reply does not block.".to_string());
     lines.push("Action types: \"message\", \"control\", \"wait\".".to_string());
     lines.push("Provide a `command` for control actions.".to_string());
     lines.push(
@@ -11057,7 +11060,7 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], relay_id: &str, wants_plan: 
             .to_string(),
     );
     lines.push(
-        "For message actions, include expects_reply: true when a reply is required, false otherwise."
+        "For message actions, include expects_reply: true when you want replies to be threaded; use wait to block."
             .to_string(),
     );
     lines.push(
@@ -11086,7 +11089,7 @@ fn build_weave_relay_prompt(targets: &[WeaveAgent], relay_id: &str, wants_plan: 
             .to_string(),
     );
     lines.push(
-        "After sending actions to multiple targets, wait for replies from the targets you plan to follow up with; do not let long-running agents block unrelated steps unless the user requests otherwise."
+        "After sending actions to multiple targets, send a wait action for the targets you plan to follow up with; do not let long-running agents block unrelated steps unless the user requests otherwise."
             .to_string(),
     );
     lines.push(
