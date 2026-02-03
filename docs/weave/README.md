@@ -22,6 +22,7 @@ If you installed the npm package, you can manage the coordinator with:
 ```sh
 weave-service start
 weave-service stop
+weave-service restart
 ```
 
 This uses `WEAVE_HOME` (default `~/.weave`) and writes a log file to

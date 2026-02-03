@@ -10,6 +10,7 @@
 
 use std::path::PathBuf;
 
+use codex_chatgpt::connectors::AppInfo;
 use codex_common::approval_presets::ApprovalPreset;
 use codex_core::protocol::Event;
 use codex_core::protocol::RateLimitSnapshot;
@@ -43,6 +44,11 @@ pub(crate) enum WindowsSandboxEnableMode {
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) enum WindowsSandboxFallbackReason {
     ElevationFailed,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ConnectorsSnapshot {
+    pub(crate) connectors: Vec<AppInfo>,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -96,6 +102,9 @@ pub(crate) enum AppEvent {
 
     /// Result of refreshing rate limits
     RateLimitSnapshotFetched(RateLimitSnapshot),
+
+    /// Result of prefetching connectors.
+    ConnectorsLoaded(Result<ConnectorsSnapshot, String>),
 
     /// Result of computing a `/diff` command.
     DiffResult(String),
@@ -193,7 +202,14 @@ pub(crate) enum AppEvent {
 
     /// Scroll the transcript to the most recent line.
     ScrollTranscriptToBottom,
-
+    /// Open the app link view in the bottom pane.
+    OpenAppLink {
+        title: String,
+        description: Option<String>,
+        instructions: String,
+        url: String,
+        is_installed: bool,
+    },
     InsertHistoryCell(Box<dyn HistoryCell>),
 
     StartCommitAnimation,
@@ -279,6 +295,9 @@ pub(crate) enum AppEvent {
         preset: ApprovalPreset,
         mode: WindowsSandboxEnableMode,
     },
+
+    /// Update the Windows sandbox feature mode without changing approval presets.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 
     /// Update the current approval policy in the running app and widget.
     UpdateAskForApprovalPolicy(AskForApproval),

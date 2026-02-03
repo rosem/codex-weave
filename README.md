@@ -47,8 +47,10 @@ Opens the Weave session menu. From there you can:
 - Join/leave a session (the active one is marked with a check).
 - Close an existing session.
 - Set your agent name (shown to other agents).
+- Set your lead role (only the lead can start relays and send control actions).
 
 You need to join a session before agent mentions will work.
+Only the lead can start relays; non-lead mentions are treated as normal chat.
 
 ### `#agent`
 
@@ -65,7 +67,7 @@ Use `#` mentions to relay tasks to other agents in the current session. Type
 After a mention, type `/` to open the agent command menu. Pick a command and
 send the message to execute it.
 
-Commands: `/new`, `/interrupt`, `/compact`, `/review`
+Commands: `/new`, `/interrupt`, `/compact`
 
 Control commands apply to the agent's current Weave task (conversation owned by the sender). They
 do not interrupt a task the target started locally.
@@ -76,7 +78,6 @@ Examples:
 #fred /new
 #fred /interrupt
 #fred /compact
-#fred /review Focus on tests and edge cases.
 ```
 
 ## Weave coordinator notes

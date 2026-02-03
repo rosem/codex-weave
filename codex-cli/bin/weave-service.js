@@ -2,6 +2,7 @@
 // Start/stop the Weave coordinator as a background process (macOS only).
 
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,9 +12,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const command = process.argv[2];
-if (!command || (command !== "start" && command !== "stop")) {
+if (!command || (command !== "start" && command !== "stop" && command !== "restart")) {
   // eslint-disable-next-line no-console
-  console.error("Usage: weave-service <start|stop>");
+  console.error("Usage: weave-service <start|stop|restart>");
   process.exit(1);
 }
 
@@ -26,6 +27,7 @@ if (process.platform !== "darwin") {
 const weaveHome = resolveWeaveHome();
 const pidPath = path.join(weaveHome, "weave-service.pid");
 const logPath = path.join(weaveHome, "weave-service.log");
+const metaPath = path.join(weaveHome, "weave-service.meta.json");
 
 const binaryPath = resolveWeaveBinaryPath();
 if (!binaryPath) {
@@ -38,8 +40,11 @@ if (!binaryPath) {
 
 if (command === "start") {
   startService();
+} else if (command === "stop") {
+  await stopService();
 } else {
   await stopService();
+  startService();
 }
 
 function resolveWeaveHome() {
@@ -147,6 +152,33 @@ function clearPid() {
   }
 }
 
+function writeMetadata() {
+  const binarySha256 = hashFile(binaryPath);
+  if (!binarySha256) {
+    return;
+  }
+
+  const metadata = {
+    binaryPath,
+    binarySha256,
+    startedAt: new Date().toISOString(),
+  };
+  try {
+    fs.writeFileSync(metaPath, `${JSON.stringify(metadata, null, 2)}\n`);
+  } catch {
+    /* ignore */
+  }
+}
+
+function hashFile(filePath) {
+  try {
+    const data = fs.readFileSync(filePath);
+    return crypto.createHash("sha256").update(data).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
 function startService() {
   const existingPid = readPid();
   if (existingPid && isRunning(existingPid)) {
@@ -176,6 +208,7 @@ function startService() {
   }
 
   writePid(child.pid);
+  writeMetadata();
   // eslint-disable-next-line no-console
   console.log(`weave-service started (pid ${child.pid}).`);
 }
