@@ -838,6 +838,8 @@ async fn make_chatwidget_manual(
         selected_weave_session_name: None,
         weave_agent_id: "test-agent".to_string(),
         weave_agent_name: "codex-test".to_string(),
+        weave_agent_is_lead: false,
+        weave_agent_role_preference: None,
         weave_agent_connection: None,
         weave_agents: None,
         pending_weave_relay: None,
@@ -3479,6 +3481,7 @@ async fn approvals_popup_navigation_skips_disabled() {
             AppEvent::CodexOp(Op::OverrideTurnContext {
                 approval_policy: Some(AskForApproval::OnRequest),
                 personality: None,
+                weave_is_lead: None,
                 ..
             })
         )),
@@ -3490,6 +3493,7 @@ async fn approvals_popup_navigation_skips_disabled() {
             AppEvent::CodexOp(Op::OverrideTurnContext {
                 approval_policy: Some(AskForApproval::Never),
                 personality: None,
+                weave_is_lead: None,
                 ..
             })
         )),
@@ -4949,6 +4953,7 @@ fn weave_mentions_accept_markdown_wrappers() {
     let agents = vec![WeaveAgent {
         id: "ticket-queue".to_string(),
         name: Some("ticket-queue".to_string()),
+        lead: false,
     }];
     let text = "Ask `#ticket-queue` and **#ticket-queue** to proceed.";
     let mentions = find_weave_mentions(text, &agents, None);
@@ -4966,6 +4971,7 @@ async fn weave_relay_reply_is_prioritized_in_queue() {
     let agents = vec![WeaveAgent {
         id: "agent-b".to_string(),
         name: Some("agent-b".to_string()),
+        lead: false,
     }];
     chat.weave_agents = Some(agents.clone());
     chat.bottom_pane.set_weave_agents(Some(agents.clone()));
@@ -5020,6 +5026,7 @@ async fn weave_relay_user_message_resumes_in_queue() {
     let agents = vec![WeaveAgent {
         id: "agent-b".to_string(),
         name: Some("agent-b".to_string()),
+        lead: false,
     }];
     chat.weave_agents = Some(agents.clone());
     chat.bottom_pane.set_weave_agents(Some(agents.clone()));
@@ -5074,6 +5081,7 @@ async fn weave_relay_reply_preserves_fifo_order_in_queue() {
     let agents = vec![WeaveAgent {
         id: "agent-b".to_string(),
         name: Some("agent-b".to_string()),
+        lead: false,
     }];
     chat.weave_agents = Some(agents.clone());
     chat.bottom_pane.set_weave_agents(Some(agents.clone()));
@@ -5211,6 +5219,7 @@ async fn weave_relay_plain_text_is_rejected() {
     let agents = vec![WeaveAgent {
         id: "agent-a".to_string(),
         name: None,
+        lead: false,
     }];
     chat.weave_agents = Some(agents.clone());
     let targets =
@@ -5241,6 +5250,7 @@ async fn weave_relay_rejects_missing_expects_reply() {
     let agents = vec![WeaveAgent {
         id: "agent-a".to_string(),
         name: None,
+        lead: false,
     }];
     chat.weave_agents = Some(agents.clone());
     let targets =
@@ -5264,6 +5274,7 @@ async fn weave_relay_request_returns_error_without_connection() {
     let agents = vec![WeaveAgent {
         id: "agent-a".to_string(),
         name: None,
+        lead: false,
     }];
     chat.weave_agents = Some(agents.clone());
     let targets =
@@ -5302,6 +5313,7 @@ async fn weave_relay_request_rejects_empty_actions_without_done() {
     let agents = vec![WeaveAgent {
         id: "agent-a".to_string(),
         name: None,
+        lead: false,
     }];
     chat.weave_agents = Some(agents.clone());
     let targets =
@@ -5338,6 +5350,7 @@ async fn weave_relay_validation_error_preserves_pending_state() {
     let agents = vec![WeaveAgent {
         id: "agent-a".to_string(),
         name: None,
+        lead: false,
     }];
     chat.weave_agents = Some(agents.clone());
     let targets =
@@ -5381,6 +5394,7 @@ async fn weave_relay_actions_error_when_no_dispatch() {
     let agents = vec![WeaveAgent {
         id: "agent-a".to_string(),
         name: None,
+        lead: false,
     }];
     chat.weave_agents = Some(agents.clone());
     let targets =
@@ -5406,6 +5420,7 @@ async fn weave_relay_rejects_control_args_for_non_review() {
     let agents = vec![WeaveAgent {
         id: "agent-a".to_string(),
         name: None,
+        lead: false,
     }];
     chat.weave_agents = Some(agents.clone());
     let targets =
@@ -5428,6 +5443,7 @@ async fn weave_relay_accepts_review_args() {
     let agents = vec![WeaveAgent {
         id: "agent-a".to_string(),
         name: None,
+        lead: false,
     }];
     chat.weave_agents = Some(agents.clone());
     let targets =

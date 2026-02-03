@@ -332,6 +332,7 @@ impl Codex {
             original_config_do_not_use: Arc::clone(&config),
             session_source,
             dynamic_tools,
+            weave_is_lead: false,
         };
 
         // Generate a unique ID for the lifetime of this Codex session.
@@ -456,6 +457,7 @@ pub(crate) struct TurnContext {
     pub(crate) tool_call_gate: Arc<ReadinessFlag>,
     pub(crate) truncation_policy: TruncationPolicy,
     pub(crate) dynamic_tools: Vec<DynamicToolSpec>,
+    pub(crate) weave_is_lead: bool,
 }
 
 impl TurnContext {
@@ -514,6 +516,7 @@ pub(crate) struct SessionConfiguration {
     /// Source of the session (cli, vscode, exec, mcp, ...)
     session_source: SessionSource,
     dynamic_tools: Vec<DynamicToolSpec>,
+    weave_is_lead: bool,
 }
 
 impl SessionConfiguration {
@@ -550,6 +553,9 @@ impl SessionConfiguration {
         if let Some(cwd) = updates.cwd.clone() {
             next_configuration.cwd = cwd;
         }
+        if let Some(weave_is_lead) = updates.weave_is_lead {
+            next_configuration.weave_is_lead = weave_is_lead;
+        }
         Ok(next_configuration)
     }
 }
@@ -563,6 +569,7 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(crate) final_output_json_schema: Option<Option<Value>>,
     pub(crate) personality: Option<Personality>,
+    pub(crate) weave_is_lead: Option<bool>,
 }
 
 impl Session {
@@ -631,6 +638,7 @@ impl Session {
             tool_call_gate: Arc::new(ReadinessFlag::new()),
             truncation_policy: model_info.truncation_policy.into(),
             dynamic_tools: session_configuration.dynamic_tools.clone(),
+            weave_is_lead: session_configuration.weave_is_lead,
         }
     }
 
@@ -2209,6 +2217,7 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                 summary,
                 collaboration_mode,
                 personality,
+                weave_is_lead,
             } => {
                 let collaboration_mode = if let Some(collab_mode) = collaboration_mode {
                     collab_mode
@@ -2230,6 +2239,7 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                         collaboration_mode: Some(collaboration_mode),
                         reasoning_summary: summary,
                         personality,
+                        weave_is_lead,
                         ..Default::default()
                     },
                 )
@@ -2446,6 +2456,7 @@ mod handlers {
                         reasoning_summary: Some(summary),
                         final_output_json_schema: Some(final_output_json_schema),
                         personality,
+                        weave_is_lead: None,
                     },
                 )
             }
@@ -2944,6 +2955,7 @@ async fn spawn_review_thread(
         tool_call_gate: Arc::new(ReadinessFlag::new()),
         dynamic_tools: parent_turn_context.dynamic_tools.clone(),
         truncation_policy: model_info.truncation_policy.into(),
+        weave_is_lead: parent_turn_context.weave_is_lead,
     };
 
     // Seed the child task with the review prompt as the initial user message.
@@ -3281,6 +3293,10 @@ async fn run_sampling_request(
         ),
         turn_context.dynamic_tools.as_slice(),
     ));
+    let mut tool_specs = router.specs();
+    if !turn_context.weave_is_lead {
+        tool_specs.retain(|spec| spec.name() != "weave_relay_actions");
+    }
 
     let model_supports_parallel = turn_context
         .client
@@ -3291,7 +3307,7 @@ async fn run_sampling_request(
 
     let prompt = Prompt {
         input,
-        tools: router.specs(),
+        tools: tool_specs,
         parallel_tool_calls: model_supports_parallel,
         base_instructions,
         personality: turn_context.personality,
@@ -4060,6 +4076,7 @@ mod tests {
             original_config_do_not_use: Arc::clone(&config),
             session_source: SessionSource::Exec,
             dynamic_tools: Vec::new(),
+            weave_is_lead: false,
         };
 
         let mut state = SessionState::new(session_configuration);
@@ -4140,6 +4157,7 @@ mod tests {
             original_config_do_not_use: Arc::clone(&config),
             session_source: SessionSource::Exec,
             dynamic_tools: Vec::new(),
+            weave_is_lead: false,
         };
 
         let mut state = SessionState::new(session_configuration);
@@ -4404,6 +4422,7 @@ mod tests {
             original_config_do_not_use: Arc::clone(&config),
             session_source: SessionSource::Exec,
             dynamic_tools: Vec::new(),
+            weave_is_lead: false,
         };
         let per_turn_config = Session::build_per_turn_config(&session_configuration);
         let model_info = ModelsManager::construct_model_info_offline(
@@ -4513,6 +4532,7 @@ mod tests {
             original_config_do_not_use: Arc::clone(&config),
             session_source: SessionSource::Exec,
             dynamic_tools: Vec::new(),
+            weave_is_lead: false,
         };
         let per_turn_config = Session::build_per_turn_config(&session_configuration);
         let model_info = ModelsManager::construct_model_info_offline(

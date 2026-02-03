@@ -117,6 +117,10 @@ pub(crate) enum AppEvent {
     SetWeaveAgentName {
         name: String,
     },
+    /// Update the current Weave agent role (lead vs agent).
+    SetWeaveAgentRole {
+        is_lead: bool,
+    },
 
     /// Prompt for a new Weave session name.
     OpenWeaveSessionCreatePrompt,

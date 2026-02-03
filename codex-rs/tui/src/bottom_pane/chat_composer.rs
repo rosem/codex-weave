@@ -271,6 +271,7 @@ pub(crate) struct ChatComposer {
     weave_session_label: Option<String>,
     weave_agent_id: Option<String>,
     weave_agents: Option<Vec<WeaveAgent>>,
+    weave_is_lead: bool,
     skills: Option<Vec<SkillMetadata>>,
     dismissed_weave_popup_token: Option<String>,
     dismissed_weave_command_popup_token: Option<String>,
@@ -366,6 +367,7 @@ impl ChatComposer {
             weave_session_label: None,
             weave_agent_id: None,
             weave_agents: None,
+            weave_is_lead: false,
             skills: None,
             dismissed_weave_popup_token: None,
             dismissed_weave_command_popup_token: None,
@@ -410,6 +412,25 @@ impl ChatComposer {
         self.weave_agent_id = Some(agent_id);
         if let ActivePopup::WeaveAgent(popup) = &mut self.active_popup {
             popup.set_agent_identity(self.weave_agent_id.clone());
+        }
+    }
+
+    pub fn set_weave_lead(&mut self, is_lead: bool) {
+        if self.weave_is_lead == is_lead {
+            return;
+        }
+        self.weave_is_lead = is_lead;
+        if !is_lead {
+            self.dismissed_weave_popup_token = None;
+            self.dismissed_weave_command_popup_token = None;
+            self.current_weave_query = None;
+            self.current_weave_command_query = None;
+            if matches!(
+                self.active_popup,
+                ActivePopup::WeaveAgent(_) | ActivePopup::WeaveCommand(_)
+            ) {
+                self.active_popup = ActivePopup::None;
+            }
         }
     }
 
@@ -1489,6 +1510,10 @@ impl ChatComposer {
                             self.remove_current_weave_token();
                             self.app_event_tx.send(AppEvent::SetWeaveAgentName { name });
                         }
+                        WeaveAgentPopupAction::SetLead { is_lead } => {
+                            self.app_event_tx
+                                .send(AppEvent::SetWeaveAgentRole { is_lead });
+                        }
                         WeaveAgentPopupAction::Separator => {}
                     }
                 }
@@ -1832,10 +1857,16 @@ impl ChatComposer {
     }
 
     fn current_weave_token(&self) -> Option<String> {
+        if !self.weave_is_lead {
+            return None;
+        }
         Self::current_prefixed_token(&self.textarea, '#', true)
     }
 
     fn current_weave_command_token(&self) -> Option<String> {
+        if !self.weave_is_lead {
+            return None;
+        }
         let agents = self.weave_agents.as_ref()?;
         let text = self.textarea.text();
         let (start_idx, end_idx) = Self::current_token_bounds(text, self.textarea.cursor())?;
@@ -6649,10 +6680,12 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
+        composer.set_weave_lead(true);
         composer.set_weave_agent_identity("self".to_string());
         composer.set_weave_agents(Some(vec![WeaveAgent {
             id: "agent-b".to_string(),
             name: Some("agent-b".to_string()),
+            lead: false,
         }]));
 
         let text = "#agent-b /".to_string();
@@ -6677,10 +6710,12 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
+        composer.set_weave_lead(true);
         composer.set_weave_agent_identity("self".to_string());
         composer.set_weave_agents(Some(vec![WeaveAgent {
             id: "agent-b".to_string(),
             name: Some("agent-b".to_string()),
+            lead: false,
         }]));
 
         let text = "#agent-b /".to_string();

@@ -215,6 +215,7 @@ async fn user_turn_personality_some_adds_update_message() -> anyhow::Result<()> 
             summary: None,
             collaboration_mode: None,
             personality: Some(Personality::Friendly),
+            weave_is_lead: None,
         })
         .await?;
 
@@ -367,6 +368,7 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
             summary: None,
             collaboration_mode: None,
             personality: Some(Personality::Friendly),
+            weave_is_lead: None,
         })
         .await?;
 

@@ -36,10 +36,15 @@ impl ToolHandler for WeaveRelayHandler {
             }
         };
 
+        if !turn.weave_is_lead {
+            return Err(FunctionCallError::RespondToModel(
+                "weave_relay_actions is only available to the lead agent".to_string(),
+            ));
+        }
         let session_source = turn.client.get_session_source();
         if matches!(session_source, SessionSource::Exec | SessionSource::Mcp) {
             return Err(FunctionCallError::RespondToModel(format!(
-                "weave_relay_actions is unsupported in {session_source} sessions"
+                "weave_relay_actions is unsupported in {session_source:?} sessions"
             )));
         }
 

@@ -184,6 +184,10 @@ pub enum Op {
         /// Updated personality preference.
         #[serde(skip_serializing_if = "Option::is_none")]
         personality: Option<Personality>,
+
+        /// Updated Weave lead-role flag (controls weave tool availability).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        weave_is_lead: Option<bool>,
     },
 
     /// Approve a command execution

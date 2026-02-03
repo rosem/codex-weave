@@ -19,6 +19,7 @@ pub enum WeaveMessageKind {
 pub struct WeaveAgent {
     pub id: String,
     pub name: Option<String>,
+    pub lead: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,6 +190,10 @@ impl WeaveAgent {
             .unwrap_or_else(|| self.id.clone())
     }
 
+    pub fn is_lead(&self) -> bool {
+        self.lead
+    }
+
     pub fn mention_text(&self) -> String {
         self.name
             .as_deref()
@@ -315,6 +320,8 @@ mod platform {
         id: String,
         #[serde(default)]
         name: Option<String>,
+        #[serde(default)]
+        role: Option<String>,
     }
 
     pub struct WeaveAgentConnection {
@@ -469,7 +476,12 @@ mod platform {
                     .map(str::trim)
                     .filter(|name| !name.is_empty())
                     .map(ToString::to_string);
-                WeaveAgent { id: entry.id, name }
+                let lead = matches!(entry.role.as_deref(), Some("lead"));
+                WeaveAgent {
+                    id: entry.id,
+                    name,
+                    lead,
+                }
             })
             .collect();
         Ok(agents)
@@ -744,6 +756,10 @@ mod platform {
         json!({ "id": agent_id, "name": name })
     }
 
+    fn agent_set_role_payload(role: &str) -> Value {
+        json!({ "role": role })
+    }
+
     fn kind_label(kind: super::WeaveMessageKind) -> &'static str {
         match kind {
             super::WeaveMessageKind::User => "user",
@@ -933,6 +949,28 @@ mod platform {
             let payload = agent_update_payload(&self.agent_id, trimmed);
             let request = new_envelope_with_src(
                 "agent.update",
+                self.agent_id.clone(),
+                Some(self.session_id.clone()),
+                Some(payload),
+            );
+            let response = self.send_request(request).await?;
+            if let Some(message) = response_error(&response) {
+                return Err(message);
+            }
+            Ok(())
+        }
+
+        pub async fn update_agent_role(&self, role: &str) -> Result<(), String> {
+            let trimmed = role.trim();
+            if trimmed.is_empty() {
+                return Err("Weave agent role is empty".to_string());
+            }
+            if trimmed != "lead" && trimmed != "agent" {
+                return Err(format!("Weave agent role is invalid: {trimmed}"));
+            }
+            let payload = agent_set_role_payload(trimmed);
+            let request = new_envelope_with_src(
+                "agent.set_role",
                 self.agent_id.clone(),
                 Some(self.session_id.clone()),
                 Some(payload),
@@ -2073,6 +2111,10 @@ mod platform {
         }
 
         pub async fn update_agent_name(&self, _name: String) -> Result<(), String> {
+            Err("Weave sessions are only supported on Unix platforms.".to_string())
+        }
+
+        pub async fn update_agent_role(&self, _role: &str) -> Result<(), String> {
             Err("Weave sessions are only supported on Unix platforms.".to_string())
         }
 

@@ -17,6 +17,7 @@ use codex_common::fuzzy_match::fuzzy_match;
 pub(crate) enum WeaveAgentPopupAction {
     Agent { mention: String },
     Rename { name: String },
+    SetLead { is_lead: bool },
     Separator,
 }
 
@@ -127,6 +128,14 @@ impl WeaveAgentPopup {
         }
     }
 
+    fn self_agent_is_lead(&self) -> Option<bool> {
+        let self_id = self.self_agent_id.as_deref()?;
+        self.agents
+            .iter()
+            .find(|agent| agent.id == self_id)
+            .map(WeaveAgent::is_lead)
+    }
+
     fn is_selectable(action: &WeaveAgentPopupAction) -> bool {
         !matches!(action, WeaveAgentPopupAction::Separator)
     }
@@ -164,7 +173,7 @@ impl WeaveAgentPopup {
         let rename = self.rename_candidate();
         let has_primary = !matches.is_empty() || rename.is_some();
         let mention_tokens = weave_client::weave_mention_tokens(&self.agents);
-        let mut actions = Vec::with_capacity(matches.len() + 2);
+        let mut actions = Vec::with_capacity(matches.len() + 3);
         for (idx, _, _) in matches {
             let agent = &self.agents[idx];
             let mention = mention_tokens
@@ -176,6 +185,9 @@ impl WeaveAgentPopup {
         if let Some(name) = rename {
             actions.push(WeaveAgentPopupAction::Rename { name });
         }
+        if let Some(is_lead) = self.self_agent_is_lead() {
+            actions.push(WeaveAgentPopupAction::SetLead { is_lead: !is_lead });
+        }
         if has_primary {
             actions.push(WeaveAgentPopupAction::Separator);
         }
@@ -186,7 +198,7 @@ impl WeaveAgentPopup {
         let matches = self.filtered();
         let rename = self.rename_candidate();
         let has_primary = !matches.is_empty() || rename.is_some();
-        let mut rows = Vec::with_capacity(matches.len() + 2);
+        let mut rows = Vec::with_capacity(matches.len() + 3);
         rows.extend(self.rows_from_matches(matches));
         if let Some(name) = rename {
             let label = format!("rename agent to \"{name}\"");
@@ -196,6 +208,27 @@ impl WeaveAgentPopup {
                 match_indices: None,
                 display_shortcut: None,
                 description: None,
+                is_disabled: false,
+                disabled_reason: None,
+                wrap_indent: None,
+            });
+        }
+        if let Some(is_lead) = self.self_agent_is_lead() {
+            let label = if is_lead {
+                "set role: agent"
+            } else {
+                "set role: lead"
+            };
+            let description = Some(format!(
+                "Current: {}",
+                if is_lead { "lead" } else { "agent" }
+            ));
+            rows.push(GenericDisplayRow {
+                name: label.to_string(),
+                name_style: None,
+                match_indices: None,
+                display_shortcut: None,
+                description,
                 is_disabled: false,
                 disabled_reason: None,
                 wrap_indent: None,

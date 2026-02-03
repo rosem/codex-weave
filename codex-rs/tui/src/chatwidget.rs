@@ -514,6 +514,8 @@ pub(crate) struct ChatWidget {
     selected_weave_session_name: Option<String>,
     weave_agent_id: String,
     weave_agent_name: String,
+    weave_agent_is_lead: bool,
+    weave_agent_role_preference: Option<bool>,
     weave_agent_connection: Option<WeaveAgentConnection>,
     weave_agents: Option<Vec<WeaveAgent>>,
     pending_weave_relay: Option<WeaveRelayTargets>,
@@ -590,6 +592,8 @@ pub(crate) struct WeaveStateSnapshot {
     pub(crate) session_name: Option<String>,
     pub(crate) agent_id: String,
     pub(crate) agent_name: String,
+    pub(crate) agent_is_lead: bool,
+    pub(crate) agent_role_preference: Option<bool>,
     pub(crate) connection: Option<WeaveAgentConnection>,
     pub(crate) pending_new_session_result: Option<WeavePendingActionResult>,
     pub(crate) pending_new_session_context: Option<WeavePendingNewSessionContext>,
@@ -1060,6 +1064,8 @@ impl ChatWidget {
             session_name,
             agent_id: self.weave_agent_id.clone(),
             agent_name: self.weave_agent_name.clone(),
+            agent_is_lead: self.weave_agent_is_lead,
+            agent_role_preference: self.weave_agent_role_preference,
             connection: self.weave_agent_connection.take(),
             pending_new_session_result: self.pending_weave_new_session_result.take(),
             pending_new_session_context: self.pending_weave_new_session_context.take(),
@@ -1070,11 +1076,14 @@ impl ChatWidget {
     pub(crate) fn restore_weave_state(&mut self, snapshot: WeaveStateSnapshot) {
         self.weave_agent_id = snapshot.agent_id;
         self.weave_agent_name = snapshot.agent_name;
+        self.weave_agent_is_lead = snapshot.agent_is_lead;
+        self.weave_agent_role_preference = snapshot.agent_role_preference;
         self.pending_weave_new_session_result = snapshot.pending_new_session_result;
         self.pending_weave_new_session_context = snapshot.pending_new_session_context;
         self.pending_weave_action_messages = snapshot.pending_action_messages;
         self.bottom_pane
             .set_weave_agent_identity(self.weave_agent_id.clone());
+        self.bottom_pane.set_weave_lead(self.weave_agent_is_lead);
         if let Some(connection) = snapshot.connection {
             self.weave_agent_connection = Some(connection);
             self.selected_weave_session_id = snapshot.session_id;
@@ -1095,6 +1104,7 @@ impl ChatWidget {
         } else {
             self.set_weave_session_selection(None);
         }
+        self.push_weave_role_context_update();
     }
     /// Synchronize the bottom-pane "task running" indicator with the current lifecycles.
     ///
@@ -2867,6 +2877,8 @@ impl ChatWidget {
             selected_weave_session_name: None,
             weave_agent_id,
             weave_agent_name,
+            weave_agent_is_lead: false,
+            weave_agent_role_preference: None,
             weave_agent_connection: None,
             weave_agents: None,
             pending_weave_relay: None,
@@ -2908,6 +2920,9 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_weave_agent_identity(widget.weave_agent_id.clone());
+        widget
+            .bottom_pane
+            .set_weave_lead(widget.weave_agent_is_lead);
         widget.prefetch_rate_limits();
         widget
             .bottom_pane
@@ -3022,6 +3037,8 @@ impl ChatWidget {
             selected_weave_session_name: None,
             weave_agent_id,
             weave_agent_name,
+            weave_agent_is_lead: false,
+            weave_agent_role_preference: None,
             weave_agent_connection: None,
             weave_agents: None,
             pending_weave_relay: None,
@@ -3063,6 +3080,9 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_weave_agent_identity(widget.weave_agent_id.clone());
+        widget
+            .bottom_pane
+            .set_weave_lead(widget.weave_agent_is_lead);
         widget.prefetch_rate_limits();
         widget
             .bottom_pane
@@ -3179,6 +3199,8 @@ impl ChatWidget {
             selected_weave_session_name: None,
             weave_agent_id,
             weave_agent_name,
+            weave_agent_is_lead: false,
+            weave_agent_role_preference: None,
             weave_agent_connection: None,
             weave_agents: None,
             pending_weave_relay: None,
@@ -3220,6 +3242,9 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_weave_agent_identity(widget.weave_agent_id.clone());
+        widget
+            .bottom_pane
+            .set_weave_lead(widget.weave_agent_is_lead);
         widget.prefetch_rate_limits();
         widget
             .bottom_pane
@@ -3234,6 +3259,16 @@ impl ChatWidget {
     }
 
     pub(crate) fn handle_key_event(&mut self, key_event: KeyEvent) {
+        if key_event.kind == KeyEventKind::Press
+            && key_event.code == KeyCode::Esc
+            && self.weave_waiting
+            && !self.agent_turn_running
+            && self.mcp_startup_status.is_none()
+            && self.bottom_pane.no_modal_or_popup_active()
+        {
+            self.cancel_weave_waiting();
+            return;
+        }
         match key_event {
             KeyEvent {
                 code: KeyCode::Char(c),
@@ -4154,6 +4189,9 @@ impl ChatWidget {
     }
 
     fn is_weave_task_message(&self, text: &str) -> bool {
+        if !self.weave_agent_is_lead {
+            return false;
+        }
         let trimmed = text.trim();
         if trimmed.is_empty() || trimmed.starts_with('!') {
             return false;
@@ -5073,6 +5111,19 @@ impl ChatWidget {
         }
     }
 
+    fn cancel_weave_waiting(&mut self) {
+        if let Some(targets) = self.active_weave_relay.clone() {
+            self.cancel_active_weave_task_on_interrupt(targets);
+            self.update_weave_waiting_status();
+            self.add_to_history(history_cell::new_info_event(
+                "Weave relay canceled.".to_string(),
+                None,
+            ));
+            return;
+        }
+        self.update_weave_waiting_status();
+    }
+
     fn should_interrupt_on_interrupt(
         &self,
         conversation_id: &str,
@@ -5253,7 +5304,10 @@ impl ChatWidget {
                 )
             }
         };
-        if is_local && let Some(agents) = self.weave_agents.as_ref() {
+        if is_local
+            && self.weave_agent_is_lead
+            && let Some(agents) = self.weave_agents.as_ref()
+        {
             let (control_actions, cleaned_text) = parse_weave_control_actions(
                 raw_text.as_str(),
                 agents,
@@ -5273,41 +5327,43 @@ impl ChatWidget {
         self.pending_weave_relay = None;
         self.weave_relay_buffer.clear();
         if is_local {
-            if let Some(agents) = self.weave_agents.as_ref() {
-                let targets =
-                    find_weave_mentions(&raw_text, agents, Some(self.weave_agent_id.as_str()));
-                if !targets.is_empty() {
-                    let relay_targets = WeaveRelayTargets::new(
-                        self.weave_agent_id.clone(),
-                        new_weave_relay_id(),
-                        &targets,
-                    );
-                    self.pending_weave_relay = Some(relay_targets.clone());
-                    self.active_weave_relay = Some(relay_targets.clone());
-                    self.reset_weave_relay_targets(&relay_targets);
-                    self.active_weave_plan = None;
-                    self.refresh_weave_session_label();
-                    let wants_plan = should_request_weave_plan(&raw_text);
-                    self.pending_weave_plan = wants_plan;
-                    let relay_prompt = build_weave_relay_prompt(
-                        &targets,
-                        relay_targets.relay_id.as_str(),
-                        wants_plan,
-                    );
-                    input_text = format!("{raw_text}\n\n{relay_prompt}");
-                } else {
-                    if let Some(active) = self.active_weave_relay.take() {
-                        self.clear_pending_weave_actions_for_targets(&active);
+            if self.weave_agent_is_lead {
+                if let Some(agents) = self.weave_agents.as_ref() {
+                    let targets =
+                        find_weave_mentions(&raw_text, agents, Some(self.weave_agent_id.as_str()));
+                    if !targets.is_empty() {
+                        let relay_targets = WeaveRelayTargets::new(
+                            self.weave_agent_id.clone(),
+                            new_weave_relay_id(),
+                            &targets,
+                        );
+                        self.pending_weave_relay = Some(relay_targets.clone());
+                        self.active_weave_relay = Some(relay_targets.clone());
+                        self.reset_weave_relay_targets(&relay_targets);
+                        self.active_weave_plan = None;
+                        self.refresh_weave_session_label();
+                        let wants_plan = should_request_weave_plan(&raw_text);
+                        self.pending_weave_plan = wants_plan;
+                        let relay_prompt = build_weave_relay_prompt(
+                            &targets,
+                            relay_targets.relay_id.as_str(),
+                            wants_plan,
+                        );
+                        input_text = format!("{raw_text}\n\n{relay_prompt}");
+                    } else {
+                        if let Some(active) = self.active_weave_relay.take() {
+                            self.clear_pending_weave_actions_for_targets(&active);
+                        }
+                        self.active_weave_plan = None;
+                        self.pending_weave_plan = false;
+                        self.refresh_weave_session_label();
                     }
-                    self.active_weave_plan = None;
-                    self.pending_weave_plan = false;
-                    self.refresh_weave_session_label();
+                } else if self.is_weave_task_message(&raw_text) {
+                    self.add_to_history(history_cell::new_error_event(
+                        "Weave session isn't connected.".to_string(),
+                    ));
+                    return;
                 }
-            } else if self.is_weave_task_message(&raw_text) {
-                self.add_to_history(history_cell::new_error_event(
-                    "Weave session isn't connected.".to_string(),
-                ));
-                return;
             }
         } else if let Some(relay_targets) = relay_targets.as_ref() {
             self.pending_weave_relay = Some(relay_targets.clone());
@@ -5997,6 +6053,7 @@ impl ChatWidget {
                 summary: None,
                 collaboration_mode: None,
                 personality: None,
+                weave_is_lead: None,
             }));
             tx.send(AppEvent::UpdateModel(switch_model.clone()));
             tx.send(AppEvent::UpdateReasoningEffort(Some(default_effort)));
@@ -6115,6 +6172,7 @@ impl ChatWidget {
                         summary: None,
                         collaboration_mode: None,
                         personality: Some(personality),
+                        weave_is_lead: None,
                     }));
                     tx.send(AppEvent::UpdatePersonality(personality));
                     tx.send(AppEvent::PersistPersonalitySelection { personality });
@@ -6388,6 +6446,7 @@ impl ChatWidget {
                 summary: None,
                 collaboration_mode: None,
                 personality: None,
+                weave_is_lead: None,
             }));
             tx.send(AppEvent::UpdateModel(model_for_action.clone()));
             tx.send(AppEvent::UpdateReasoningEffort(effort_for_action));
@@ -6561,6 +6620,7 @@ impl ChatWidget {
                 summary: None,
                 collaboration_mode: None,
                 personality: None,
+                weave_is_lead: None,
             }));
         self.app_event_tx.send(AppEvent::UpdateModel(model.clone()));
         self.app_event_tx
@@ -6753,6 +6813,27 @@ impl ChatWidget {
             selected_description: Some("Press Enter to rename this agent.".to_string()),
             actions: vec![Box::new(|tx| {
                 tx.send(AppEvent::OpenWeaveAgentNamePrompt);
+            })],
+            dismiss_on_select: true,
+            ..Default::default()
+        });
+        let is_lead = self.weave_agent_is_lead;
+        let lead_label = if is_lead {
+            "✓ Lead role".to_string()
+        } else {
+            "Lead role".to_string()
+        };
+        let lead_description = if self.selected_weave_session_id.is_some() {
+            "Make this agent the lead."
+        } else {
+            "Applies when you join a session."
+        };
+        items.push(SelectionItem {
+            name: lead_label,
+            description: Some(lead_description.to_string()),
+            selected_description: Some("Press Enter to toggle lead role.".to_string()),
+            actions: vec![Box::new(move |tx| {
+                tx.send(AppEvent::SetWeaveAgentRole { is_lead: !is_lead });
             })],
             dismiss_on_select: true,
             ..Default::default()
@@ -7273,6 +7354,53 @@ impl ChatWidget {
         }
     }
 
+    pub(crate) fn set_weave_agent_role(&mut self, is_lead: bool) {
+        if self.weave_agent_is_lead == is_lead {
+            return;
+        }
+        self.weave_agent_is_lead = is_lead;
+        self.weave_agent_role_preference = Some(is_lead);
+        self.bottom_pane.set_weave_lead(is_lead);
+        if let Some(agents) = self.weave_agents.as_mut() {
+            if let Some(agent) = agents
+                .iter_mut()
+                .find(|agent| agent.id == self.weave_agent_id)
+            {
+                agent.lead = is_lead;
+            }
+            self.bottom_pane.set_weave_agents(Some(agents.clone()));
+        }
+        self.push_weave_role_context_update();
+        if let Some(connection) = self.weave_agent_connection.as_mut() {
+            let sender = connection.sender();
+            let tx = self.app_event_tx.clone();
+            tokio::spawn(async move {
+                let role = if is_lead { "lead" } else { "agent" };
+                if let Err(err) = sender.update_agent_role(role).await {
+                    tx.send(AppEvent::InsertHistoryCell(Box::new(
+                        history_cell::new_error_event(format!(
+                            "Failed to update Weave agent role: {err}"
+                        )),
+                    )));
+                }
+            });
+        }
+    }
+
+    fn push_weave_role_context_update(&self) {
+        let _ = self.codex_op_tx.send(Op::OverrideTurnContext {
+            cwd: None,
+            approval_policy: None,
+            sandbox_policy: None,
+            model: None,
+            effort: None,
+            summary: None,
+            collaboration_mode: None,
+            personality: None,
+            weave_is_lead: Some(self.weave_agent_is_lead),
+        });
+    }
+
     pub(crate) fn on_weave_agent_connected(
         &mut self,
         session_id: String,
@@ -7296,6 +7424,25 @@ impl ChatWidget {
             });
         }
         self.weave_agent_connection = Some(connection);
+        if let Some(is_lead) = self.weave_agent_role_preference {
+            if let Some(sender) = self
+                .weave_agent_connection
+                .as_ref()
+                .map(WeaveAgentConnection::sender)
+            {
+                let tx = self.app_event_tx.clone();
+                tokio::spawn(async move {
+                    let role = if is_lead { "lead" } else { "agent" };
+                    if let Err(err) = sender.update_agent_role(role).await {
+                        tx.send(AppEvent::InsertHistoryCell(Box::new(
+                            history_cell::new_error_event(format!(
+                                "Failed to update Weave agent role: {err}"
+                            )),
+                        )));
+                    }
+                });
+            }
+        }
         self.request_weave_agent_list();
         self.maybe_send_pending_weave_new_session_result();
     }
@@ -7314,11 +7461,21 @@ impl ChatWidget {
         if self.selected_weave_session_id.as_deref() != Some(session_id.as_str()) {
             return;
         }
+        let mut next_lead = None;
         if let Some(agent) = agents
             .iter_mut()
             .find(|agent| agent.id == self.weave_agent_id)
         {
             agent.name = Some(self.weave_agent_name.clone());
+            next_lead = Some(agent.is_lead());
+        }
+        if let Some(is_lead) = next_lead {
+            if self.weave_agent_is_lead != is_lead {
+                self.weave_agent_is_lead = is_lead;
+                self.push_weave_role_context_update();
+            }
+            self.bottom_pane.set_weave_lead(self.weave_agent_is_lead);
+            self.weave_agent_role_preference = None;
         }
         self.weave_agents = Some(agents.clone());
         self.bottom_pane.set_weave_agents(Some(agents));
@@ -7397,6 +7554,7 @@ impl ChatWidget {
                 agents.push(WeaveAgent {
                     id: src.clone(),
                     name: src_name.clone(),
+                    lead: false,
                 });
             }
             self.bottom_pane.set_weave_agents(Some(agents.clone()));
@@ -8423,8 +8581,12 @@ impl ChatWidget {
         self.pending_weave_new_session = false;
         self.active_weave_control_context = None;
         self.bottom_pane.set_weave_agents(None);
+        self.bottom_pane.set_weave_lead(false);
         self.refresh_weave_session_label();
         self.weave_waiting = false;
+        self.weave_agent_is_lead = false;
+        self.weave_agent_role_preference = None;
+        self.push_weave_role_context_update();
         self.update_task_running_state();
     }
 
@@ -8549,6 +8711,7 @@ impl ChatWidget {
                 summary: None,
                 collaboration_mode: None,
                 personality: None,
+                weave_is_lead: None,
             }));
             tx.send(AppEvent::UpdateAskForApprovalPolicy(approval));
             tx.send(AppEvent::UpdateSandboxPolicy(sandbox_clone));

@@ -219,6 +219,11 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub fn set_weave_lead(&mut self, is_lead: bool) {
+        self.composer.set_weave_lead(is_lead);
+        self.request_redraw();
+    }
+
     pub fn set_steer_enabled(&mut self, enabled: bool) {
         self.composer.set_steer_enabled(enabled);
         self.request_redraw();

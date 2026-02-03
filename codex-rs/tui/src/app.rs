@@ -1517,6 +1517,9 @@ impl App {
             AppEvent::SetWeaveAgentName { name } => {
                 self.chat_widget.set_weave_agent_name(name);
             }
+            AppEvent::SetWeaveAgentRole { is_lead } => {
+                self.chat_widget.set_weave_agent_role(is_lead);
+            }
             AppEvent::OpenWeaveSessionCreatePrompt => {
                 self.chat_widget.open_weave_session_create_prompt();
             }
@@ -1827,6 +1830,7 @@ impl App {
                                         summary: None,
                                         collaboration_mode: None,
                                         personality: None,
+                                        weave_is_lead: None,
                                     },
                                 ));
                                 self.app_event_tx

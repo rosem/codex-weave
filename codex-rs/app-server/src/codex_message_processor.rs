@@ -3892,6 +3892,7 @@ impl CodexMessageProcessor {
                     summary: params.summary,
                     collaboration_mode: params.collaboration_mode,
                     personality: params.personality,
+                    weave_is_lead: None,
                 })
                 .await;
         }

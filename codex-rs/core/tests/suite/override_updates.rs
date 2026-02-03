@@ -123,6 +123,7 @@ async fn override_turn_context_records_permissions_update() -> Result<()> {
             summary: None,
             collaboration_mode: None,
             personality: None,
+            weave_is_lead: None,
         })
         .await?;
 
@@ -166,6 +167,7 @@ async fn override_turn_context_records_environment_update() -> Result<()> {
             summary: None,
             collaboration_mode: None,
             personality: None,
+            weave_is_lead: None,
         })
         .await?;
 
@@ -203,6 +205,7 @@ async fn override_turn_context_records_collaboration_update() -> Result<()> {
             summary: None,
             collaboration_mode: Some(collaboration_mode),
             personality: None,
+            weave_is_lead: None,
         })
         .await?;
 
